@@ -860,7 +860,6 @@ async function fetchYahooLastPrice(symbol) {
 }
 
 async function fetchFinnhubCandles(symbol, interval, limit, token) {
-  if (!token) throw new Error('Finnhub cáº§n token Ä‘á»ƒ láº¥y XAU realtime.');
   const to = Math.floor(Date.now() / 1000);
   const from = to - (intervalMs[interval] || 60_000) / 1000 * Math.max(limit + 10, 120);
   const params = new URLSearchParams({
@@ -868,8 +867,8 @@ async function fetchFinnhubCandles(symbol, interval, limit, token) {
     resolution: finnhubResolution[interval] || '5',
     from: String(Math.floor(from)),
     to: String(to),
-    token,
   });
+  if (token) params.set('token', token);
   const response = await fetch(`/api/finnhub/candle?${params}`);
   if (!response.ok) throw new Error(`Finnhub candle tráº£ lá»—i ${response.status}.`);
   const data = await response.json();
@@ -886,7 +885,6 @@ async function fetchFinnhubCandles(symbol, interval, limit, token) {
 }
 
 async function fetchFinnhubDaily(symbol, token) {
-  if (!token) throw new Error('Finnhub cáº§n token Ä‘á»ƒ láº¥y daily data.');
   const to = Math.floor(Date.now() / 1000);
   const from = to - 420 * 24 * 60 * 60;
   const params = new URLSearchParams({
@@ -894,8 +892,8 @@ async function fetchFinnhubDaily(symbol, token) {
     resolution: 'D',
     from: String(from),
     to: String(to),
-    token,
   });
+  if (token) params.set('token', token);
   const response = await fetch(`/api/finnhub/candle?${params}`);
   if (!response.ok) throw new Error(`Finnhub daily tráº£ lá»—i ${response.status}.`);
   const data = await response.json();
@@ -933,30 +931,28 @@ function parseTwelveDataValues(data) {
 }
 
 async function fetchTwelveDataCandles(symbol, interval, limit, token) {
-  if (!token) throw providerError('twelvedata', 'TwelveData can API token de lay XAU realtime.');
   const params = new URLSearchParams({
     symbol: toTwelveDataSymbol(symbol),
     interval: twelveDataInterval[interval] || '5min',
     outputsize: String(limit),
     timezone: 'UTC',
     order: 'ASC',
-    apikey: token,
   });
+  if (token) params.set('apikey', token);
   const response = await fetch(`/api/twelvedata/time_series?${params}`);
   if (!response.ok) throw providerError('twelvedata', `TwelveData candle returned ${response.status}.`);
   return parseTwelveDataValues(await response.json()).slice(-limit);
 }
 
 async function fetchTwelveDataDaily(symbol, token) {
-  if (!token) throw providerError('twelvedata', 'TwelveData can API token de lay daily data.');
   const params = new URLSearchParams({
     symbol: toTwelveDataSymbol(symbol),
     interval: '1day',
     outputsize: '260',
     timezone: 'UTC',
     order: 'ASC',
-    apikey: token,
   });
+  if (token) params.set('apikey', token);
   const response = await fetch(`/api/twelvedata/time_series?${params}`);
   if (!response.ok) throw providerError('twelvedata', `TwelveData daily returned ${response.status}.`);
   return parseTwelveDataValues(await response.json());
@@ -977,8 +973,8 @@ async function fetchMarketDaily(source, symbol, token) {
 }
 
 async function fetchFinnhubQuote(symbol, token) {
-  if (!token) throw new Error('Finnhub needs a token for realtime quotes.');
-  const params = new URLSearchParams({ symbol: toFinnhubSymbol(symbol), token });
+  const params = new URLSearchParams({ symbol: toFinnhubSymbol(symbol) });
+  if (token) params.set('token', token);
   const response = await fetch(`/api/finnhub/quote?${params}`);
   if (!response.ok) throw new Error(`Finnhub quote returned ${response.status}.`);
 
@@ -989,8 +985,8 @@ async function fetchFinnhubQuote(symbol, token) {
 }
 
 async function fetchTwelveDataPrice(symbol, token) {
-  if (!token) throw providerError('twelvedata', 'TwelveData needs a token for realtime quotes.');
-  const params = new URLSearchParams({ symbol: toTwelveDataSymbol(symbol), apikey: token });
+  const params = new URLSearchParams({ symbol: toTwelveDataSymbol(symbol) });
+  if (token) params.set('apikey', token);
   const response = await fetch(`/api/twelvedata/price?${params}`);
   if (!response.ok) throw providerError('twelvedata', `TwelveData price returned ${response.status}.`);
 
@@ -2594,6 +2590,7 @@ function initChart() {
   el.chart.appendChild(levelLayer);
   el.chart.appendChild(markerLayer);
 
+  const isCompactView = window.matchMedia('(max-width: 620px)').matches;
   chart = LightweightCharts.createChart(el.chart, {
     width: el.chart.clientWidth,
     height: el.chart.clientHeight,
@@ -2623,7 +2620,7 @@ function initChart() {
       secondsVisible: false,
       minBarSpacing: 0.5,
       barSpacing: currentBarSpacing,
-      rightOffset: 18,
+      rightOffset: isCompactView ? 8 : 18,
       fixLeftEdge: false,
       lockVisibleTimeRangeOnResize: true,
       tickMarkFormatter: (time) => {
@@ -2636,7 +2633,11 @@ function initChart() {
     },
     rightPriceScale: {
       borderColor: '#555555',
-      scaleMargins: { top: 0.1, bottom: 0.1 },
+      visible: true,
+      entireTextOnly: true,
+      ticksVisible: true,
+      minimumWidth: isCompactView ? 74 : 62,
+      scaleMargins: { top: isCompactView ? 0.06 : 0.1, bottom: isCompactView ? 0.08 : 0.1 },
     },
   });
   el.chart.appendChild(levelLayer);
@@ -2686,9 +2687,9 @@ function initChart() {
 
   const panes = typeof chart.panes === 'function' ? chart.panes() : chart.panes;
   if (Array.isArray(panes) && panes.length >= 3) {
-    panes[0].setStretchFactor(4);
-    panes[1].setStretchFactor(0.8);
-    panes[2].setStretchFactor(0.8);
+    panes[0].setStretchFactor(isCompactView ? 6 : 4);
+    panes[1].setStretchFactor(isCompactView ? 0.55 : 0.8);
+    panes[2].setStretchFactor(isCompactView ? 0.55 : 0.8);
   }
 
   chart.timeScale().subscribeVisibleLogicalRangeChange(() => {

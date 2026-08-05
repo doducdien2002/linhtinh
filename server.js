@@ -11,6 +11,14 @@ const authStorePath = path.join(root, 'auth.store.json');
 const sessionTtlMs = 1000 * 60 * 60 * 24 * 14;
 const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 const loginAttempts = new Map();
+const marketApiKeys = [
+  ...(process.env.MARKET_API_KEYS || '')
+    .split(',')
+    .map((key) => key.trim())
+    .filter(Boolean),
+  '3465f94ff4d64f2e94cc85ef80b50272',
+  'e8f78a96e634470588a4f1f2e2449972',
+].filter((key, index, all) => all.indexOf(key) === index);
 const blockedFileNames = new Set([
   '.env',
   '.env.local',
@@ -651,6 +659,60 @@ async function proxyJson(res, target) {
   }
 }
 
+function looksLikeApiLimit(status, body) {
+  const text = String(body || '').toLowerCase();
+  return status === 401
+    || status === 403
+    || status === 429
+    || text.includes('api limit')
+    || text.includes('rate limit')
+    || text.includes('quota')
+    || text.includes('credits')
+    || text.includes('exceeded')
+    || text.includes('too many requests')
+    || text.includes('invalid api key')
+    || text.includes('invalid token');
+}
+
+async function proxyJsonWithKeyFallback(res, target, keyParam) {
+  if (target.searchParams.get(keyParam) || !marketApiKeys.length) {
+    proxyJson(res, target);
+    return;
+  }
+
+  let lastStatus = 502;
+  let lastBody = '';
+  let lastType = 'application/json; charset=utf-8';
+
+  for (const key of marketApiKeys) {
+    const keyedTarget = new URL(target);
+    keyedTarget.searchParams.set(keyParam, key);
+
+    try {
+      const upstream = await fetch(keyedTarget, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 CRAZII-local-chart',
+          Accept: 'application/json,text/plain,*/*',
+        },
+      });
+      const body = await upstream.text();
+      lastStatus = upstream.status;
+      lastBody = body;
+      lastType = upstream.headers.get('content-type') || 'application/json; charset=utf-8';
+      if (!looksLikeApiLimit(upstream.status, body)) {
+        send(res, upstream.status, body, lastType);
+        return;
+      }
+    } catch (error) {
+      lastStatus = 502;
+      lastBody = JSON.stringify({ error: error.message });
+      lastType = 'application/json; charset=utf-8';
+    }
+  }
+
+  send(res, lastStatus, lastBody || JSON.stringify({ error: 'All API keys failed' }), lastType);
+}
+
 function serveFile(res, pathname) {
   const safePath = pathname === '/' ? '/index.html' : pathname;
   const filePath = path.normalize(path.join(root, safePath));
@@ -730,28 +792,28 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/finnhub/candle') {
     const target = new URL('https://finnhub.io/api/v1/forex/candle');
     for (const [key, value] of url.searchParams) target.searchParams.set(key, value);
-    proxyJson(res, target);
+    proxyJsonWithKeyFallback(res, target, 'token');
     return;
   }
 
   if (url.pathname === '/api/finnhub/quote') {
     const target = new URL('https://finnhub.io/api/v1/quote');
     for (const [key, value] of url.searchParams) target.searchParams.set(key, value);
-    proxyJson(res, target);
+    proxyJsonWithKeyFallback(res, target, 'token');
     return;
   }
 
   if (url.pathname === '/api/twelvedata/time_series') {
     const target = new URL('https://api.twelvedata.com/time_series');
     for (const [key, value] of url.searchParams) target.searchParams.set(key, value);
-    proxyJson(res, target);
+    proxyJsonWithKeyFallback(res, target, 'apikey');
     return;
   }
 
   if (url.pathname === '/api/twelvedata/price') {
     const target = new URL('https://api.twelvedata.com/price');
     for (const [key, value] of url.searchParams) target.searchParams.set(key, value);
-    proxyJson(res, target);
+    proxyJsonWithKeyFallback(res, target, 'apikey');
     return;
   }
 
