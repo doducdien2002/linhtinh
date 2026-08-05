@@ -130,9 +130,14 @@ let latestSignalTelegram = null;
 let telegramSignalStates = [];
 let signalDetectionReady = false;
 let signalNoticeCollapsed = false;
-let hideAddSignals = window.localStorage.getItem('hideAddSignals') === '1';
-let hideProbabilitySignals = window.localStorage.getItem('hideProbabilitySignals') === '1';
-let hideDiamondSignals = window.localStorage.getItem('hideDiamondSignals') === '1';
+function savedHiddenDefaultOn(key) {
+  const saved = window.localStorage.getItem(key);
+  return saved === null ? true : saved === '1';
+}
+
+let hideAddSignals = savedHiddenDefaultOn('hideAddSignals');
+let hideProbabilitySignals = savedHiddenDefaultOn('hideProbabilitySignals');
+let hideDiamondSignals = savedHiddenDefaultOn('hideDiamondSignals');
 let hiddenPriceLevels = new Set();
 let suppressNextSignalSend = false;
 let drawingMode = '';
