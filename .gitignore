@@ -1,0 +1,6 @@
+auth.store.json
+telegram.config.json
+.env
+.env.*
+*.log
+node_modules/

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>XAUUSD.ca KIM CHI VANG Indicator</title>
+    <link rel="stylesheet" href="./styles.css?v=20260805-yellow-left-tools" />
+    <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="toolbar">
+        <div class="symbol-title">
+          <span class="coin-mark"></span>
+          <strong>XAUUSD.ca</strong>
+        </div>
+
+        <div class="chart-actions" aria-label="Chart controls">
+          <button class="timeframe-button" type="button" data-timeframe="1m">1m</button>
+          <button class="timeframe-button" type="button" data-timeframe="5m">5m</button>
+          <button class="timeframe-button" type="button" data-timeframe="15m">15m</button>
+          <button class="timeframe-button" type="button" data-timeframe="1d">1D</button>
+          <div class="signal-filter">
+            <button id="signalFilterButton" class="signal-filter-button" type="button" aria-expanded="false">
+              Tín hiệu: 3/3
+            </button>
+            <div id="signalFilterMenu" class="signal-filter-menu hidden">
+              <label>
+                <input id="showProbabilitySignalsCheckbox" type="checkbox" checked />
+                <span>Tín hiệu OK</span>
+              </label>
+              <label>
+                <input id="showAddSignalsCheckbox" type="checkbox" checked />
+                <span>Tín hiệu ADD</span>
+              </label>
+              <label>
+                <input id="showDiamondSignalsCheckbox" type="checkbox" checked />
+                <span>Kim cương</span>
+              </label>
+            </div>
+          </div>
+          <button class="icon-button" type="button" data-action="fit" aria-label="Fit chart">&#x2922;</button>
+          <button class="icon-button" type="button" data-action="zoom-out" aria-label="Zoom out">&#8722;</button>
+          <button class="icon-button" type="button" data-action="zoom-in" aria-label="Zoom in">+</button>
+          <button id="reloadButton" class="icon-button" type="button" aria-label="Reload">&#8635;</button>
+          <button class="icon-button" type="button" data-action="fullscreen" aria-label="Fullscreen">&#9974;</button>
+          <button id="signalToggleButton" class="signal-toggle-button signal-state-empty" type="button" title="Chua co keo">TIN HIEU</button>
+          <button id="advancedControlsButton" class="icon-button settings-toggle-button" type="button" aria-label="Cai dat" aria-expanded="false" aria-controls="advancedControlsPanel">&#9881;</button>
+        </div>
+
+        <div class="account-actions">
+          <button id="adminButton" class="account-button hidden" type="button">QL TK</button>
+          <span id="accountName" class="account-name">...</span>
+          <button id="logoutButton" class="account-button" type="button">Thoat</button>
+        </div>
+
+        <div id="advancedControlsPanel" class="control-hidden hidden" aria-label="Advanced controls">
+          <input id="symbolInput" value="XAUUSD" spellcheck="false" />
+          <label class="market-feed-control">
+            <span>Feed</span>
+            <select id="sourceSelect">
+              <option value="yahoo" selected>Yahoo XAU Spot Fallback (delay)</option>
+              <option value="finnhub">Finnhub XAU Live</option>
+              <option value="twelvedata">TwelveData XAU Live</option>
+              <option value="binance">Binance Crypto</option>
+            </select>
+            <input id="tokenInput" placeholder="API key" spellcheck="false" />
+          </label>
+          <select id="intervalSelect">
+            <option value="1m">1m</option>
+            <option value="5m" selected>5m</option>
+            <option value="15m">15m</option>
+            <option value="30m">30m</option>
+            <option value="1h">1h</option>
+            <option value="4h">4h</option>
+            <option value="1d">D1</option>
+          </select>
+          <select id="limitSelect">
+            <option value="300">300</option>
+            <option value="500">500</option>
+            <option value="1000" selected>1000</option>
+            <option value="2000">2000</option>
+            <option value="5000">5000</option>
+          </select>
+          <label class="op-adjust-control" title="Nhap +3/-3 de bu lech, hoac nhap thang OP mau nhu 4077">
+            <span>Can OP</span>
+            <input id="opOffsetInput" value="0" type="number" step="0.01" placeholder="+3 / 4077" spellcheck="false" />
+          </label>
+          <button id="resetOpOffsetButton" class="op-reset-button" type="button" title="Dua can OP ve 0">0</button>
+          <div class="level-visibility-control">
+            <span>Duong gia</span>
+            <div class="level-visibility-grid">
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="price" checked /><span>Price</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="op" checked /><span>OP</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="ktrPlus3" checked /><span>KTR+3</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="ktrPlus2" checked /><span>KTR+2</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="ktrPlus1" checked /><span>KTR+1</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="ktrMinus1" checked /><span>KTR-1</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="ktrMinus2" checked /><span>KTR-2</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="ktrMinus3" checked /><span>KTR-3</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="ma30" checked /><span>30MA</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="ma200" checked /><span>200MA</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="pivot1" checked /><span>Pivot 01</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="pivot2" checked /><span>Pivot 02</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="mlp" checked /><span>MLP</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="kcb01" checked /><span>KCB 01</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="kcb02" checked /><span>KCB 02</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="kcb03" checked /><span>KCB 03</span></label>
+              <label><input class="level-visibility-checkbox" type="checkbox" data-level-key="diamondLine" checked /><span>DL</span></label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="chart-frame">
+        <aside class="draw-toolbar" aria-label="Drawing tools">
+          <button class="draw-tool-button" type="button" data-draw-tool="cursor" title="Con tro">+</button>
+          <button class="draw-tool-button" type="button" data-draw-tool="trendline" title="Ve trendline">/</button>
+          <button class="draw-tool-button" type="button" data-draw-tool="hline" title="Ve duong ngang">=</button>
+          <button class="draw-tool-button" type="button" disabled title="Sap them">N</button>
+          <button class="draw-tool-button" type="button" disabled title="Sap them">A</button>
+          <button class="draw-tool-button" type="button" disabled title="Sap them">T</button>
+          <button class="draw-tool-button" type="button" disabled title="Sap them">M</button>
+          <button id="clearDrawingsButton" class="draw-tool-button draw-tool-danger" type="button" title="Xoa net ve">X</button>
+        </aside>
+        <div id="chart"></div>
+        <div class="watermark">
+          <strong>KIM CHI VANG</strong><span></span>
+        </div>
+        <div id="ksiTitle" class="pane-label ksi-label">BOYS SELLING</div>
+        <div id="kcxTitle" class="pane-label kcx-label">BEARISHNESS</div>
+        <div id="status" class="status-pill">Loading real market data...</div>
+        <aside id="signalNotice" class="signal-notice hidden" aria-live="polite">
+          <div class="signal-head">
+            <span id="signalNoticeTitle">WAITING SIGNAL</span>
+            <div class="signal-actions">
+              <button id="hideSignalButton" class="hide-signal-button" type="button">ẨN</button>
+              <button id="sendTelegramButton" class="send-telegram-button" type="button">TELE</button>
+              <button id="copySignalButton" class="copy-signal-button" type="button">COPY</button>
+            </div>
+          </div>
+          <pre id="signalNoticeText"></pre>
+          <div id="signalRiskText" class="signal-risk"></div>
+        </aside>
+      </section>
+
+      <section class="analysis">
+        <div>
+          <span>OP Bias</span>
+          <strong id="biasText">--</strong>
+        </div>
+        <div>
+          <span>KTR Step</span>
+          <strong id="ktrText">--</strong>
+        </div>
+        <div>
+          <span>Nearest Level</span>
+          <strong id="nearestText">--</strong>
+        </div>
+        <div>
+          <span>Signal</span>
+          <strong id="signalText">--</strong>
+        </div>
+      </section>
+    </main>
+
+    <section id="authScreen" class="auth-screen">
+      <form id="loginForm" class="login-panel">
+        <div>
+          <span class="login-eyebrow">XAUUSD.ca</span>
+          <h1>Dang nhap</h1>
+          <p>Moi tai khoan chi duoc dung tren 1 thiet bi cung luc.</p>
+        </div>
+        <label>
+          <span>Tai khoan</span>
+          <input id="loginUsername" autocomplete="username" spellcheck="false" />
+        </label>
+        <label>
+          <span>Mat khau</span>
+          <input id="loginPassword" type="password" autocomplete="current-password" />
+        </label>
+        <div id="loginError" class="login-error"></div>
+        <button id="loginButton" type="submit">Dang nhap</button>
+      </form>
+    </section>
+
+    <section id="sessionKickNotice" class="session-kick hidden" role="alert">
+      <div>
+        <strong>Da bi dang xuat</strong>
+        <p>Tai khoan nay vua dang nhap tren thiet bi khac.</p>
+        <button id="kickLoginAgainButton" type="button">Dang nhap lai</button>
+      </div>
+    </section>
+
+    <section id="adminPanel" class="admin-panel hidden" aria-label="Quan ly tai khoan">
+      <div class="admin-dialog">
+        <div class="admin-head">
+          <strong>Quan ly tai khoan</strong>
+          <button id="closeAdminButton" type="button">Dong</button>
+        </div>
+        <form id="createUserForm" class="create-user-form">
+          <input id="newUsername" placeholder="tai khoan" spellcheck="false" />
+          <input id="newPassword" placeholder="mat khau" type="password" />
+          <select id="newRole">
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+          <button type="submit">Them</button>
+        </form>
+        <div id="adminError" class="admin-error"></div>
+        <div id="adminUserList" class="admin-user-list"></div>
+      </div>
+    </section>
+
+    <script src="./app.js?v=20260805-yellow-left-tools"></script>
+  </body>
+</html>
+
+
