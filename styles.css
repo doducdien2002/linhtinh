@@ -988,40 +988,78 @@ select {
   place-items: center;
   padding: 18px;
   background:
-    radial-gradient(circle at 18% 12%, rgba(218, 165, 32, 0.18), transparent 28%),
-    linear-gradient(135deg, rgba(2, 6, 23, 0.82), rgba(15, 23, 42, 0.68));
-  backdrop-filter: blur(12px);
+    linear-gradient(135deg, rgba(8, 13, 28, 0.9), rgba(15, 23, 42, 0.72)),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.04) 0 1px, transparent 1px 18px);
+  backdrop-filter: blur(14px);
 }
 
 .login-panel {
   display: grid;
-  gap: 15px;
-  width: min(410px, 100%);
-  padding: 26px;
-  border: 1px solid rgba(255, 255, 255, 0.74);
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
-  box-shadow: 0 30px 80px rgba(2, 6, 23, 0.38);
+  gap: 16px;
+  width: min(430px, 100%);
+  padding: 28px;
+  border: 1px solid rgba(226, 232, 240, 0.88);
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 26px 76px rgba(2, 6, 23, 0.42);
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.login-logo {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: #101827;
+  color: #facc15;
+  font-size: 14px;
+  font-weight: 900;
+  box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0.34);
+}
+
+.login-brand strong,
+.login-brand small {
+  display: block;
+}
+
+.login-brand strong {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.login-brand small {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .login-eyebrow {
   display: block;
-  color: #966600;
+  margin-top: 4px;
+  color: #b45309;
   font-size: 12px;
   font-weight: 900;
   letter-spacing: 0;
 }
 
 .login-panel h1 {
-  margin: 5px 0 0;
+  margin: 6px 0 0;
   color: #0f172a;
-  font-size: 30px;
+  font-size: 31px;
   line-height: 1.1;
 }
 
 .login-panel p {
-  margin: 7px 0 0;
+  margin: 8px 0 0;
   color: #475569;
   font-size: 13px;
   font-weight: 700;
@@ -1030,7 +1068,7 @@ select {
 
 .login-panel label {
   display: grid;
-  gap: 6px;
+  gap: 7px;
   color: #334155;
   font-size: 12px;
   font-weight: 900;
@@ -1041,20 +1079,22 @@ select {
 .create-user-form select {
   height: 42px;
   min-width: 0;
-  border: 1px solid #ccd6e3;
-  border-radius: 10px;
-  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
   color: #0f172a;
-  padding: 0 11px;
+  padding: 0 12px;
   font: 800 13px/1 Arial, sans-serif;
   outline: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
 }
 
 .login-panel input:focus,
 .create-user-form input:focus,
 .create-user-form select:focus {
-  border-color: #009900;
-  box-shadow: 0 0 0 3px rgba(0, 153, 0, 0.14);
+  border-color: #16a34a;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.14);
 }
 
 .login-panel button,
@@ -1064,27 +1104,44 @@ select {
 .admin-user-actions button {
   height: 40px;
   border: 1px solid #020617;
-  border-radius: 10px;
+  border-radius: 8px;
   background: #020617;
   color: #ffffff;
   padding: 0 12px;
   font-size: 12px;
   font-weight: 900;
   cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+
+.login-panel button {
+  height: 44px;
+  margin-top: 2px;
+  background: linear-gradient(135deg, #101827, #172033);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.22);
+}
+
+.login-panel button:hover,
+.session-kick button:hover,
+.create-user-form button:hover,
+.admin-head button:hover,
+.admin-user-actions button:hover {
+  transform: translateY(-1px);
 }
 
 .login-panel button[disabled],
 .create-user-form button[disabled] {
   cursor: wait;
   opacity: 0.65;
+  transform: none;
 }
 
 .login-error,
 .admin-error {
-  min-height: 16px;
-  color: #dc2626;
+  min-height: 18px;
+  color: #b91c1c;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 900;
   line-height: 1.35;
 }
 
@@ -1113,13 +1170,13 @@ select {
 
 .admin-dialog {
   display: grid;
-  gap: 12px;
-  width: min(980px, 100%);
+  gap: 14px;
+  width: min(1040px, 100%);
   max-height: min(86vh, 760px);
   overflow: hidden;
-  padding: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  border-radius: 14px;
+  padding: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 12px;
   background: #ffffff;
   box-shadow: 0 30px 80px rgba(2, 6, 23, 0.36);
 }
@@ -1132,9 +1189,18 @@ select {
 }
 
 .admin-head strong {
+  display: block;
   color: #0f172a;
-  font-size: 17px;
+  font-size: 19px;
   font-weight: 900;
+}
+
+.admin-head span {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .admin-head button,
@@ -1147,12 +1213,16 @@ select {
 .create-user-form {
   display: grid;
   grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) 110px auto;
-  gap: 8px;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
 }
 
 .admin-user-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   min-height: 0;
   overflow: auto;
   padding-right: 2px;
@@ -1162,18 +1232,19 @@ select {
   display: grid;
   grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1fr) minmax(140px, 0.8fr) auto;
   align-items: center;
-  gap: 10px;
-  min-height: 66px;
-  padding: 11px;
+  gap: 12px;
+  min-height: 72px;
+  padding: 12px;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
-  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  background: #ffffff;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
 }
 
 .admin-user-row strong {
   display: block;
   color: #0f172a;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .admin-user-row span,
@@ -1191,7 +1262,9 @@ select {
 
 .admin-user-status.online strong::after {
   content: " online";
-  color: #009900;
+  display: inline-block;
+  margin-left: 6px;
+  color: #16a34a;
   font-size: 11px;
 }
 
@@ -1199,6 +1272,7 @@ select {
   display: inline-flex;
   justify-content: flex-end;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .admin-user-actions button.danger {

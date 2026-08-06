@@ -128,6 +128,9 @@ let latestSignalId = '';
 let latestSignalCopy = '';
 let latestSignalTelegram = null;
 let telegramSignalStates = [];
+let telegramPriceCheckRunning = false;
+let telegramQueuedPrice = null;
+let telegramRetryTimer = null;
 let signalDetectionReady = false;
 let signalNoticeCollapsed = false;
 function savedHiddenDefaultOn(key) {
@@ -153,6 +156,7 @@ let authState = {
 
 const ADD_SIGNAL_TP_MIN_MOVE = 10;
 const ADD_SIGNAL_TP_MAX_MOVE = 10;
+const TELEGRAM_AUTO_INTERVAL = '5m';
 const TELEGRAM_SIGNAL_STORAGE_KEY = 'craziiTelegramOpenSignals';
 const TELEGRAM_SIGNAL_MAX_OPEN = 10;
 const TRADE_SL_MOVE = 10;
@@ -406,7 +410,7 @@ async function authPost(path, payload = {}) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.ok === false) {
-    const error = new Error(data.error || `Loi dang nhap ${response.status}`);
+    const error = new Error(data.error || `Lỗi đăng nhập ${response.status}`);
     error.status = response.status;
     error.reason = data.reason || '';
     error.data = data;
@@ -419,7 +423,7 @@ async function authGet(path) {
   const response = await fetch(path);
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.ok === false) {
-    const error = new Error(data.error || `Loi tai du lieu ${response.status}`);
+    const error = new Error(data.error || `Lỗi tải dữ liệu ${response.status}`);
     error.status = response.status;
     error.reason = data.reason || '';
     error.data = data;
@@ -434,7 +438,7 @@ function syncAuthUi() {
   el.authScreen?.classList.toggle('hidden', loggedIn);
   el.accountName.textContent = authState.user
     ? `${authState.user.displayName || authState.user.username}`
-    : 'Chua dang nhap';
+    : 'Chưa đăng nhập';
   el.adminButton?.classList.toggle('hidden', authState.user?.role !== 'admin');
 }
 
@@ -468,7 +472,7 @@ function showLogin(message = '') {
   window.setTimeout(() => el.loginUsername?.focus(), 0);
 }
 
-function showKickNotice(message = 'Tai khoan nay vua dang nhap tren thiet bi khac.') {
+function showKickNotice(message = 'Tài khoản này vừa đăng nhập trên thiết bị khác.') {
   clearAuthSession();
   el.authScreen?.classList.add('hidden');
   el.sessionKickNotice?.classList.remove('hidden');
@@ -482,7 +486,7 @@ function handleAuthError(error) {
     showKickNotice(error.message);
     return;
   }
-  showLogin(error.message || 'Phien dang nhap khong hop le.');
+  showLogin(error.message || 'Phiên đăng nhập không hợp lệ.');
 }
 
 function startAuthHeartbeat() {
@@ -564,9 +568,9 @@ function renderAdminUsers(users) {
   if (!el.adminUserList) return;
   el.adminUserList.innerHTML = users.map((user) => {
     const online = Boolean(user.activeSessionId);
-    const enabledLabel = user.enabled ? 'Dang mo' : 'Dang khoa';
+    const enabledLabel = user.enabled ? 'Đang mở' : 'Đang khóa';
     const roleLabel = user.role === 'admin' ? 'Admin' : 'User';
-    const actionLabel = user.enabled ? 'Khoa' : 'Mo';
+    const actionLabel = user.enabled ? 'Khóa' : 'Mở';
     return `
       <div class="admin-user-row">
         <div class="admin-user-status ${online ? 'online' : ''}">
@@ -574,15 +578,15 @@ function renderAdminUsers(users) {
           <span>${roleLabel} - ${enabledLabel}</span>
         </div>
         <div>
-          <span>${online ? escapeHtml(user.activeDeviceName || 'Dang online') : 'Chua dang nhap'}</span>
+          <span>${online ? escapeHtml(user.activeDeviceName || 'Đang online') : 'Chưa đăng nhập'}</span>
           <small>${escapeHtml(user.activeIp || '--')}</small>
         </div>
         <div>
-          <span>Lan cuoi</span>
+          <span>Lần cuối</span>
           <small>${formatAuthTime(user.activeAt)}</small>
         </div>
         <div class="admin-user-actions">
-          <button type="button" data-admin-action="password" data-user-id="${user.id}">Mat khau</button>
+          <button type="button" data-admin-action="password" data-user-id="${user.id}">Mật khẩu</button>
           <button type="button" data-admin-action="kick" data-user-id="${user.id}" class="danger" ${online ? '' : 'disabled'}>Kick</button>
           <button type="button" data-admin-action="toggle" data-user-id="${user.id}" data-enabled="${user.enabled ? '0' : '1'}">${actionLabel}</button>
         </div>
@@ -2813,23 +2817,25 @@ function saveTelegramSignalStates() {
 
 function formatTradeSignalMessage(signal) {
   const direction = signal.isBuy ? 'BUY' : 'SELL';
+  const tradeLabel = signal.number ? `[KÈO ${signal.number}] ` : '';
   const trend = signal.isBuy ? 'Xu hướng Tăng' : 'Xu hướng Giảm';
   const icon = signal.isBuy ? '🟢' : '🔴';
   const vietnameseSide = signal.isBuy ? 'mua' : 'bán';
   return [
-    `⚡️Về vùng ${direction} nhé => áp dụng Kim Chỉ Vàng => vào lệnh ${direction}`,
+    `⚡️ ${tradeLabel}${direction}`,
     trend,
     `${icon} Có thể cân nhắc ${direction} (${vietnameseSide}):  ${formatPrice(signal.entry)}`,
     `📌 Quản trị rủi ro:`,
-    `→ Cắt lỗ chung từ lệnh đầu: ${formatPrice(signal.sl)} ( ${TRADE_SL_MOVE} giá )`,
-    `→ Kỳ vọng chốt lãi chung: ${TRADE_TP_MIN_MOVE} giá → ${TRADE_TP_MAX_MOVE} giá`,
+    `→ Cắt lỗ: ${formatPrice(signal.sl)} ( ${TRADE_SL_MOVE} giá )`,
+    `→ TP1: ${formatPrice(signal.tp1)} ( ${TRADE_TP_MIN_MOVE} giá từ entry )`,
+    `→ TP2: ${formatPrice(signal.tp2)} ( 10 giá từ entry )`,
+    `→ TP3: ${formatPrice(signal.tp3)} ( ${TRADE_TP_MAX_MOVE} giá từ entry )`,
     ``,
     `⚠️ Lưu ý:`,
     `Đây là góc nhìn cá nhân, không phải khuyến nghị đầu tư.`,
     `Anh/chị tự chịu trách nhiệm với quyết định giao dịch.`,
   ].join('\n');
 }
-
 function formatTelegramOpenMessage(signal) {
   return formatTradeSignalMessage(signal);
 }
@@ -2846,20 +2852,41 @@ function formatTelegramConfluenceMessage(signal) {
 }
 
 function formatTelegramCloseMessage(signal, result, price) {
-  const isWin = String(result).startsWith('TP');
-  const targetPrice = isWin ? signal.tp1 : signal.sl;
+  const resultText = String(result || '').toUpperCase();
+  const isWin = resultText.startsWith('TP');
+  const isBreakEven = resultText === 'BE';
+  const targetKey = resultText.toLowerCase();
+  const targetPrice = isWin ? Number(signal[targetKey]) : isBreakEven ? Number(signal.entry) : Number(signal.sl);
+  const targetProfit = isWin ? telegramProfitLine(signal, targetPrice, true) : '';
+  const followUp = resultText === 'TP1'
+    ? [
+      targetProfit,
+      `🔒 Cân nhắc chốt một phần hoặc kéo cắt lỗ về điểm vào: ${formatPrice(signal.entry)}`,
+    ].join('\n')
+    : resultText === 'TP2'
+      ? [
+        targetProfit,
+        `📍 Cân nhắc chốt thêm một phần, phần còn lại quan sát TP3: ${formatPrice(signal.tp3)}`,
+      ].join('\n')
+      : resultText === 'TP3'
+        ? [targetProfit, '🏁 Hoàn tất đủ 3 mục tiêu chốt lãi.'].join('\n')
+        : isBreakEven
+          ? '🟡 Giá quay về điểm vào sau TP1, kèo đã hòa vốn.'
+          : '';
+  const statusIcon = isWin ? '✅' : isBreakEven ? '🟡' : '❌';
+  const statusText = isWin ? `ĐÃ ${resultText}` : isBreakEven ? 'ĐÃ HÒA VỐN' : 'ĐÃ SL';
   return [
-    `${isWin ? '✅' : '❌'} KÈO ${signal.number} ${signal.side} ${isWin ? 'ĐÃ TP' : 'ĐÃ SL'}`,
+    `${statusIcon} KÈO ${signal.number} ${signal.side} ${statusText}`,
     `Mã: ${signal.symbol || el.symbol.value.trim().toUpperCase()} | Khung: ${formatIntervalLabel(signal.interval)}`,
     `Entry: ${formatPrice(signal.entry)}`,
     `Thời gian mở: ${formatTelegramTime(signal.time)}`,
     `Thời gian đóng: ${formatTelegramTime()}`,
-    `${isWin ? 'TP' : 'SL'}: ${formatPrice(targetPrice)}`,
+    `${isWin ? resultText : isBreakEven ? 'Hòa vốn' : 'SL'}: ${formatPrice(targetPrice)}`,
     `Giá hiện tại: ${formatPrice(price)}`,
-    telegramProfitLine(signal, price, isWin),
-  ].join('\n');
+    isWin || isBreakEven ? '' : telegramProfitLine(signal, price, isWin),
+    followUp,
+  ].filter(Boolean).join('\n');
 }
-
 async function sendTelegramMessage(text) {
   if (!authState.sessionId) {
     el.status.textContent = 'Telegram loi: can dang nhap';
@@ -2889,7 +2916,15 @@ async function activateTelegramSignal(signal, levels) {
   telegramSignalStates = loadTelegramSignalStates();
   const existingSignal = telegramSignalStates.find((item) => item.id === signal.id && !item.closed);
   if (existingSignal) {
-    checkTelegramSignalPrice(levels.price);
+    await checkTelegramSignalPrice(levels.price);
+    return;
+  }
+  await checkTelegramSignalPrice(levels.price);
+
+  const openSignals = telegramSignalStates.filter((item) => item && !item.closed);
+  if (openSignals.length >= TELEGRAM_SIGNAL_MAX_OPEN) {
+    el.status.textContent = `Đang có ${TELEGRAM_SIGNAL_MAX_OPEN} kèo ${formatIntervalLabel(TELEGRAM_AUTO_INTERVAL)} mở, tạm dừng bắn kèo mới.`;
+    saveTelegramSignalStates();
     return;
   }
 
@@ -2899,35 +2934,103 @@ async function activateTelegramSignal(signal, levels) {
     number,
     symbol: el.symbol.value.trim().toUpperCase(),
     interval: levels.interval,
+    originalSl: signal.sl,
+    tpHits: [],
+    breakEvenMoved: false,
     closed: false,
   };
   const sent = await sendTelegramMessage(formatTelegramOpenMessage(nextSignalState));
   if (!sent) return;
   telegramSignalStates = [
-    ...telegramSignalStates.filter((item) => !item.closed).slice(-(TELEGRAM_SIGNAL_MAX_OPEN - 1)),
+    ...openSignals,
     nextSignalState,
   ];
   saveTelegramSignalStates();
   checkTelegramSignalPrice(levels.price);
 }
 
-function checkTelegramSignalPrice(price) {
-  if (!Number.isFinite(Number(price))) return;
+function telegramTargetLevels(signal) {
+  return [
+    { key: 'tp1', name: 'TP1', price: Number(signal.tp1) },
+    { key: 'tp2', name: 'TP2', price: Number(signal.tp2) },
+    { key: 'tp3', name: 'TP3', price: Number(signal.tp3) },
+  ].filter((target) => Number.isFinite(target.price));
+}
 
-  const currentPrice = Number(price);
-  let changed = false;
-  for (const signal of telegramSignalStates) {
-    if (!signal || signal.closed) continue;
+function scheduleTelegramPriceRetry(price) {
+  window.clearTimeout(telegramRetryTimer);
+  telegramRetryTimer = window.setTimeout(() => {
+    checkTelegramSignalPrice(price);
+  }, 5000);
+}
 
-    const hitSl = signal.isBuy ? currentPrice <= signal.sl : currentPrice >= signal.sl;
-    const hitTp = signal.isBuy ? currentPrice >= signal.tp1 : currentPrice <= signal.tp1;
-    if (!hitSl && !hitTp) continue;
+async function notifyTelegramTradeResult(signal, result, price) {
+  const sent = await sendTelegramMessage(formatTelegramCloseMessage(signal, result, price));
+  if (!sent) scheduleTelegramPriceRetry(price);
+  return sent;
+}
 
-    signal.closed = true;
-    changed = true;
-    sendTelegramMessage(formatTelegramCloseMessage(signal, hitSl ? 'SL' : 'TP', currentPrice));
+async function checkTelegramSignalPrice(price) {
+  const numericPrice = Number(price);
+  if (!Number.isFinite(numericPrice)) return;
+
+  telegramQueuedPrice = numericPrice;
+  if (telegramPriceCheckRunning) return;
+
+  telegramPriceCheckRunning = true;
+  try {
+    while (Number.isFinite(telegramQueuedPrice)) {
+      const currentPrice = telegramQueuedPrice;
+      telegramQueuedPrice = null;
+
+      if (!telegramSignalStates.length) {
+        telegramSignalStates = loadTelegramSignalStates();
+      }
+
+      let changed = false;
+      for (const signal of telegramSignalStates) {
+        if (!signal || signal.closed) continue;
+        signal.tpHits = Array.isArray(signal.tpHits) ? signal.tpHits : [];
+
+        const hitSl = signal.isBuy ? currentPrice <= Number(signal.sl) : currentPrice >= Number(signal.sl);
+        if (hitSl) {
+          const isBreakEven = signal.breakEvenMoved && Math.abs(Number(signal.sl) - Number(signal.entry)) < 0.000001;
+          const result = isBreakEven ? 'BE' : 'SL';
+          const sent = await notifyTelegramTradeResult(signal, result, currentPrice);
+          if (!sent) continue;
+
+          signal.closed = true;
+          signal.closedAt = Date.now();
+          changed = true;
+          continue;
+        }
+
+        for (const target of telegramTargetLevels(signal)) {
+          if (signal.tpHits.includes(target.name)) continue;
+          const hitTp = signal.isBuy ? currentPrice >= target.price : currentPrice <= target.price;
+          if (!hitTp) continue;
+
+          const sent = await notifyTelegramTradeResult(signal, target.name, currentPrice);
+          if (!sent) break;
+
+          signal.tpHits.push(target.name);
+          if (target.name === 'TP1') {
+            signal.originalSl = Number.isFinite(Number(signal.originalSl)) ? signal.originalSl : signal.sl;
+            signal.sl = signal.entry;
+            signal.breakEvenMoved = true;
+          }
+          if (target.name === 'TP3') {
+            signal.closed = true;
+            signal.closedAt = Date.now();
+          }
+          changed = true;
+        }
+      }
+      if (changed) saveTelegramSignalStates();
+    }
+  } finally {
+    telegramPriceCheckRunning = false;
   }
-  if (changed) saveTelegramSignalStates();
 }
 
 function signalRiskLabel(reward, risk) {
@@ -3139,6 +3242,7 @@ function renderSignalNotice(candles, markers, levels) {
   }
 
   const isNewSignal = signalDetectionReady && latestSignalId !== signal.id;
+  const isAutoTelegramInterval = levels.interval === TELEGRAM_AUTO_INTERVAL;
   latestSignalId = signal.id;
   latestSignalCopy = signal.copy;
   latestSignalTelegram = { signal, levels };
@@ -3148,7 +3252,9 @@ function renderSignalNotice(candles, markers, levels) {
   el.signalNotice.classList.add(signal.isBuy ? 'signal-buy' : 'signal-sell');
   el.signalNoticeTitle.textContent = `${signal.label} ${signal.entryZone}`;
   el.signalNoticeText.textContent = signal.copy;
-  el.signalRiskText.textContent = `${signal.invalidationNote} Rủi ro/lệnh nên <= 0.5-1% tài khoản.`;
+  el.signalRiskText.textContent = isAutoTelegramInterval
+    ? `${signal.invalidationNote} Auto Telegram 5M đang bật. Rủi ro/lệnh nên <= 0.5-1% tài khoản.`
+    : `${signal.invalidationNote} Đang ưu tiên bắn Telegram khung 5M, khung ${formatIntervalLabel(levels.interval)} chỉ hiển thị trên chart.`;
   syncSignalToggle(true);
 
   if (isNewSignal && !suppressAutoSend) {
@@ -3156,7 +3262,9 @@ function renderSignalNotice(candles, markers, levels) {
     syncSignalToggle(true);
     el.signalNotice.classList.add('signal-pulse');
     window.setTimeout(() => el.signalNotice?.classList.remove('signal-pulse'), 1800);
-    activateTelegramSignal(signal, levels);
+    if (isAutoTelegramInterval) {
+      activateTelegramSignal(signal, levels);
+    }
   }
 
   checkTelegramSignalPrice(levels.price);
@@ -3570,7 +3678,9 @@ window.addEventListener('resize', () => {
 
 el.reload.addEventListener('click', loadChart);
 function isAddStrategy(strategy) {
-  return strategy === 'add-pullback' || strategy === 'tp-window-add';
+  return strategy === 'add-pullback'
+    || strategy === 'tp-window-add'
+    || strategy === 'cycle-continuation-add';
 }
 
 function clearHiddenSignalNotice() {
