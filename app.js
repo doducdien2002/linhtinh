@@ -79,8 +79,10 @@ const el = {
 };
 
 const savedSource = window.localStorage.getItem('marketSource');
-if (['yahoo', 'twelvedata', 'finnhub', 'binance'].includes(savedSource)) {
+if (savedSource === 'twelvedata') {
   el.source.value = savedSource;
+} else {
+  window.localStorage.setItem('marketSource', 'twelvedata');
 }
 el.token.value = window.localStorage.getItem(sourceTokenKey(el.source.value)) || '';
 const savedOpOffset = window.localStorage.getItem('opOffset');
@@ -3663,8 +3665,8 @@ function startFinnhubStream(symbol, interval, limit, token) {
 function fallbackToYahoo(sourceName, symbol, interval, limit, reason = '') {
   closeLiveSocket();
   const detail = reason ? ` (${reason})` : '';
-  el.status.textContent = `${sourceName} het quota/loi${detail}, chuyen sang Yahoo fallback`;
-  startTickerFallback('yahoo', symbol, interval, limit);
+  el.status.textContent = `${sourceName} loi${detail}, dang thu lai qua REST poll`;
+  startTickerFallback('twelvedata', symbol, interval, limit, tickPollToken || el.token.value.trim());
 }
 
 function startTwelveDataStream(symbol, interval, limit, token) {
@@ -3715,7 +3717,7 @@ function startTwelveDataStream(symbol, interval, limit, token) {
     window.clearInterval(socketHeartbeatTimer);
     socketHeartbeatTimer = null;
     liveSocket = null;
-    if (!tickPollTimer) startTickerFallback('yahoo', symbol, interval, limit);
+    if (!tickPollTimer) startTickerFallback('twelvedata', symbol, interval, limit, token);
   };
 }
 
@@ -3806,15 +3808,10 @@ async function loadChart() {
         fetchMarketDaily(source, symbol, token),
       ]);
     } catch (error) {
-      if (source !== 'twelvedata' || !isTwelveDataLimitError(error)) throw error;
-      console.warn(error);
-      activeSource = 'yahoo';
-      activeToken = '';
-      el.status.textContent = `TwelveData het quota/loi, dang chuyen ${symbol} sang Yahoo fallback...`;
-      [candles, dailyCandles] = await Promise.all([
-        fetchMarketCandles(activeSource, symbol, interval, limit, activeToken),
-        fetchMarketDaily(activeSource, symbol, activeToken),
-      ]);
+      if (source === 'twelvedata' && isTwelveDataLimitError(error)) {
+        throw new Error(`TwelveData het han muc hoac API key khong hop le: ${error.message}`);
+      }
+      throw error;
     }
 
     currentCandles = candles;
@@ -3829,10 +3826,7 @@ async function loadChart() {
         currentDailyCandles = await fetchMarketDaily(activeSource, symbol, activeToken);
       } catch (error) {
         if (activeSource === 'twelvedata' && isTwelveDataLimitError(error)) {
-          activeSource = 'yahoo';
-          activeToken = '';
-          currentDailyCandles = await fetchMarketDaily(activeSource, symbol, activeToken);
-          fallbackToYahoo('TwelveData', symbol, interval, limit, error.message);
+          el.status.textContent = `TwelveData het han muc/loi (${error.message}), se thu lai...`;
           return;
         }
         throw error;
@@ -3933,8 +3927,8 @@ function positionFixedPanel(panel, anchorEl, { align = 'right' } = {}) {
   const anchorRect = anchorEl.getBoundingClientRect();
   const margin = 8;
   panel.style.top = `${Math.round(anchorRect.bottom + margin)}px`;
-  panel.style.right = '';
-  panel.style.left = '';
+  panel.style.right = 'auto';
+  panel.style.left = '0px';
 
   // Measure natural width/position first, then clamp within the viewport.
   const panelRect = panel.getBoundingClientRect();
