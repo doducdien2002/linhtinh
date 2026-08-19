@@ -115,6 +115,32 @@ body.auth-locked .app-shell {
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
 }
 
+.toolbar-token-input {
+  height: 32px;
+  width: 132px;
+  min-width: 0;
+  border: 1px solid #d9e2ef;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f172a;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.toolbar-token-input::placeholder {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.toolbar-token-input:focus {
+  border-color: #009900;
+  box-shadow: 0 0 0 3px rgba(0, 153, 0, 0.14);
+}
+
 .account-actions {
   display: inline-flex;
   align-items: center;
@@ -320,7 +346,7 @@ body.auth-locked .app-shell {
   display: inline-flex;
   align-items: center;
   height: 34px;
-  min-width: min(438px, 35vw);
+  min-width: min(260px, 22vw);
   overflow: hidden;
   border: 1px solid #d9e2ef;
   border-radius: 8px;
@@ -340,23 +366,14 @@ body.auth-locked .app-shell {
   white-space: nowrap;
 }
 
-.market-feed-control #sourceSelect,
-.market-feed-control #tokenInput {
+.market-feed-control #sourceSelect {
   height: 32px;
   min-width: 0;
+  width: 100%;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-}
-
-.market-feed-control #sourceSelect {
-  width: min(230px, 18vw);
-  border-right: 1px solid #e2e8f0;
-}
-
-.market-feed-control #tokenInput {
-  width: min(170px, 13vw);
 }
 
 .market-feed-control:focus-within {
@@ -1476,20 +1493,17 @@ select {
   }
 
   .market-feed-control {
-    flex: 0 0 360px;
-    min-width: 360px;
-  }
-
-  .market-feed-control #sourceSelect {
-    width: 178px;
-  }
-
-  .market-feed-control #tokenInput {
-    width: 124px;
+    flex: 0 0 220px;
+    min-width: 220px;
   }
 
   .op-adjust-control {
     flex: 0 0 146px;
+  }
+
+  .toolbar-token-input {
+    width: 108px;
+    font-size: 16px;
   }
 
   .watermark::before {
@@ -1581,13 +1595,12 @@ select {
     min-width: 0;
   }
 
-  .market-feed-control #sourceSelect,
-  .market-feed-control #tokenInput {
-    width: 50%;
-  }
-
   .op-adjust-control {
     width: 100%;
+  }
+
+  .toolbar-token-input {
+    width: 92px;
   }
 
   .op-adjust-control #opOffsetInput {
