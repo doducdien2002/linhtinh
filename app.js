@@ -3928,10 +3928,32 @@ function applySignalFilterChange() {
   }
 }
 
+function positionFixedPanel(panel, anchorEl, { align = 'right' } = {}) {
+  if (!panel || !anchorEl) return;
+  const anchorRect = anchorEl.getBoundingClientRect();
+  const margin = 8;
+  panel.style.top = `${Math.round(anchorRect.bottom + margin)}px`;
+  panel.style.right = '';
+  panel.style.left = '';
+
+  // Measure natural width/position first, then clamp within the viewport.
+  const panelRect = panel.getBoundingClientRect();
+  const viewportWidth = window.innerWidth;
+  let left = align === 'right'
+    ? anchorRect.right - panelRect.width
+    : anchorRect.left;
+  left = Math.max(8, Math.min(left, viewportWidth - panelRect.width - 8));
+  panel.style.left = `${Math.round(left)}px`;
+
+  const maxHeight = window.innerHeight - anchorRect.bottom - margin - 8;
+  panel.style.maxHeight = `${Math.max(160, Math.round(maxHeight))}px`;
+}
+
 function setSignalFilterMenuOpen(open) {
   el.signalFilterMenu?.classList.toggle('hidden', !open);
   el.signalFilterButton?.parentElement?.classList.toggle('open', open);
   el.signalFilterButton?.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) positionFixedPanel(el.signalFilterMenu, el.signalFilterButton, { align: 'right' });
 }
 
 el.signalFilterButton?.addEventListener('click', (event) => {
@@ -3946,7 +3968,9 @@ el.showAddSignals?.addEventListener('change', applySignalFilterChange);
 el.showDiamondSignals?.addEventListener('change', applySignalFilterChange);
 el.advancedControlsButton?.addEventListener('click', (event) => {
   event.stopPropagation();
-  setAdvancedControlsOpen(el.advancedControlsPanel?.classList.contains('hidden'));
+  const opening = el.advancedControlsPanel?.classList.contains('hidden');
+  setAdvancedControlsOpen(opening);
+  if (opening) positionFixedPanel(el.advancedControlsPanel, el.advancedControlsButton, { align: 'right' });
 });
 el.advancedControlsPanel?.addEventListener('click', (event) => {
   event.stopPropagation();
@@ -3958,6 +3982,10 @@ document.addEventListener('click', () => {
   setSignalFilterMenuOpen(false);
   setAdvancedControlsOpen(false);
 });
+document.querySelector('.toolbar')?.addEventListener('scroll', () => {
+  setSignalFilterMenuOpen(false);
+  setAdvancedControlsOpen(false);
+}, { passive: true });
 el.hideSignal?.addEventListener('click', () => {
   signalNoticeCollapsed = true;
   syncSignalToggle(Boolean(latestSignalCopy));

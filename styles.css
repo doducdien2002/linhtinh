@@ -209,7 +209,7 @@ body.auth-locked .app-shell {
 }
 
 .signal-filter-menu {
-  position: absolute;
+  position: fixed;
   top: calc(100% + 8px);
   right: 0;
   z-index: 20;
@@ -259,7 +259,7 @@ body.auth-locked .app-shell {
 }
 
 .control-hidden {
-  position: absolute;
+  position: fixed;
   top: calc(100% + 8px);
   right: 18px;
   z-index: 30;
@@ -1367,7 +1367,9 @@ select {
     min-height: 100vh;
     min-height: 100dvh;
     margin: 0;
+    border: 0;
     border-radius: 0;
+    box-shadow: none;
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
     padding-bottom: env(safe-area-inset-bottom);
@@ -1384,6 +1386,7 @@ select {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
+    border-bottom: 0;
   }
 
   .toolbar::-webkit-scrollbar {
@@ -1420,26 +1423,18 @@ select {
     height: auto;
     min-height: 0;
     margin: 0;
+    border: 0;
     border-radius: 0;
-    border-left: 0;
-    border-right: 0;
+    box-shadow: none;
   }
 
   #chart {
-    left: 38px;
+    left: 0;
     right: 0;
   }
 
   .draw-toolbar {
-    width: 38px;
-    padding: 6px 4px;
-    gap: 5px;
-  }
-
-  .draw-tool-button {
-    width: 32px;
-    height: 32px;
-    font-size: 14px;
+    display: none;
   }
 
   .chart-actions {
@@ -1610,7 +1605,7 @@ select {
   }
 
   .pane-label {
-    left: 42px;
+    left: 6px;
     font-size: 10px;
   }
 
@@ -1714,12 +1709,8 @@ select {
     font-size: 13px;
   }
 
-  #chart {
-    left: 34px;
-  }
-
   .pane-label {
-    left: 38px;
+    left: 6px;
     font-size: 9px;
   }
 
