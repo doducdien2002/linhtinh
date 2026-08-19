@@ -8,9 +8,15 @@ const port = Number(process.env.PORT || 8097);
 const host = process.env.HOST || '0.0.0.0';
 const telegramConfigPath = path.join(root, 'telegram.config.json');
 const authStorePath = path.join(root, 'auth.store.json');
+const telegramDeliveryStorePath = path.join(root, 'telegram.delivery.store.json');
+const firebaseServiceAccountPath = path.join(root, 'firebase.service-account.json');
 const sessionTtlMs = 1000 * 60 * 60 * 24 * 14;
 const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 const loginAttempts = new Map();
+const telegramDeliveryPending = new Map();
+let firestore = null;
+let firestoreInitErrorShown = false;
+let signalMonitorRunning = false;
 const marketApiKeys = [
   ...(process.env.MARKET_API_KEYS || '')
     .split(',')
@@ -24,6 +30,8 @@ const blockedFileNames = new Set([
   '.env.local',
   'auth.store.json',
   'telegram.config.json',
+  'telegram.delivery.store.json',
+  'firebase.service-account.json',
 ]);
 
 const contentTypes = {
@@ -68,6 +76,48 @@ function readTelegramConfig() {
   } catch (error) {
     console.warn(`Telegram config error: ${error.message}`);
     return {};
+  }
+}
+
+function loadTelegramDeliveryStore() {
+  try {
+    if (!fs.existsSync(telegramDeliveryStorePath)) return { deliveries: {} };
+    const store = JSON.parse(fs.readFileSync(telegramDeliveryStorePath, 'utf8'));
+    return store && typeof store.deliveries === 'object' && store.deliveries
+      ? store
+      : { deliveries: {} };
+  } catch (error) {
+    console.warn(`Telegram delivery store error: ${error.message}`);
+    return { deliveries: {} };
+  }
+}
+
+function saveTelegramDeliveryStore(store) {
+  const entries = Object.entries(store.deliveries || {})
+    .sort(([, left], [, right]) => String(left.sentAt).localeCompare(String(right.sentAt)))
+    .slice(-1000);
+  store.deliveries = Object.fromEntries(entries);
+  fs.writeFileSync(telegramDeliveryStorePath, JSON.stringify(store, null, 2), 'utf8');
+}
+
+function getFirestore() {
+  if (firestore) return firestore;
+  if (!fs.existsSync(firebaseServiceAccountPath)) return null;
+
+  try {
+    const admin = require('firebase-admin');
+    if (!admin.apps.length) {
+      const serviceAccount = JSON.parse(fs.readFileSync(firebaseServiceAccountPath, 'utf8'));
+      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    }
+    firestore = admin.firestore();
+    return firestore;
+  } catch (error) {
+    if (!firestoreInitErrorShown) {
+      console.error(`Firebase Admin initialization failed: ${error.message}`);
+      firestoreInitErrorShown = true;
+    }
+    return null;
   }
 }
 
@@ -254,6 +304,7 @@ function loginAttemptKey(req, username) {
 function isLoginBlocked(key) {
   const attempt = loginAttempts.get(key);
   if (!attempt) return false;
+  if (!attempt.blockedUntil) return false;
   if (Date.now() > attempt.blockedUntil) {
     loginAttempts.delete(key);
     return false;
@@ -264,7 +315,8 @@ function isLoginBlocked(key) {
 function recordLoginFailure(key) {
   const current = loginAttempts.get(key) || { count: 0, blockedUntil: 0 };
   current.count += 1;
-  current.blockedUntil = current.count >= 8 ? Date.now() + 10 * 60 * 1000 : Date.now() + 30 * 1000;
+  // Only lock after repeated failures. A single typo must not reject the next valid login.
+  current.blockedUntil = current.count >= 8 ? Date.now() + 10 * 60 * 1000 : 0;
   loginAttempts.set(key, current);
 }
 
@@ -586,61 +638,245 @@ function handleAuth(req, res, url) {
   sendJson(res, 404, { ok: false, error: 'Auth endpoint not found' });
 }
 
-async function sendTelegramMessage(req, res) {
-  if (req.method !== 'POST') {
-    send(res, 405, JSON.stringify({ ok: false, error: 'Method not allowed' }), 'application/json; charset=utf-8');
-    return;
-  }
-  if (rejectCrossOrigin(req, res)) return;
-
-  let payload;
-  try {
-    payload = await readJsonBody(req);
-    const store = loadAuthStore();
-    resolveSession(store, payload.sessionId);
-  } catch (error) {
-    sendJson(res, error.status || 401, { ok: false, error: error.message || 'Unauthorized', reason: error.reason || '' });
-    return;
-  }
-
+async function deliverTelegramText(text, deliveryId = '') {
   const telegramConfig = readTelegramConfig();
   const token = telegramConfig.botToken || process.env.TELEGRAM_BOT_TOKEN;
   const chatId = telegramConfig.chatId || process.env.TELEGRAM_CHAT_ID;
   if (!token || !chatId) {
-    send(
-      res,
-      400,
-      JSON.stringify({ ok: false, error: 'Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID' }),
-      'application/json; charset=utf-8',
-    );
-    return;
+    throw new Error('Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID');
   }
 
-  try {
-    const text = String(payload.text || '').trim();
-    if (!text) {
-      send(res, 400, JSON.stringify({ ok: false, error: 'Missing message text' }), 'application/json; charset=utf-8');
-      return;
-    }
+  const normalizedText = String(text || '').trim();
+  if (!normalizedText) throw new Error('Missing message text');
+  const normalizedDeliveryId = String(deliveryId || '').trim().slice(0, 180);
+  const deliveryStore = normalizedDeliveryId ? loadTelegramDeliveryStore() : null;
+  if (normalizedDeliveryId && deliveryStore.deliveries[normalizedDeliveryId]) {
+    return { deduplicated: true, sentAt: deliveryStore.deliveries[normalizedDeliveryId].sentAt };
+  }
 
+  const deliver = async () => {
     const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: chatId,
-        text: text.slice(0, 3900),
+        text: normalizedText.slice(0, 3900),
         disable_web_page_preview: true,
       }),
     });
     const body = await response.text();
-    send(
-      res,
-      response.ok ? 200 : response.status,
-      body || JSON.stringify({ ok: response.ok }),
-      response.headers.get('content-type') || 'application/json; charset=utf-8',
-    );
+    if (!response.ok) throw new Error(`Telegram returned ${response.status}: ${body.slice(0, 300)}`);
+  };
+
+  let pending = normalizedDeliveryId ? telegramDeliveryPending.get(normalizedDeliveryId) : null;
+  if (!pending) {
+    pending = deliver();
+    if (normalizedDeliveryId) telegramDeliveryPending.set(normalizedDeliveryId, pending);
+  }
+  try {
+    await pending;
+    if (normalizedDeliveryId) {
+      deliveryStore.deliveries[normalizedDeliveryId] = { sentAt: nowIso() };
+      saveTelegramDeliveryStore(deliveryStore);
+    }
+    return { deduplicated: false };
+  } finally {
+    if (normalizedDeliveryId) telegramDeliveryPending.delete(normalizedDeliveryId);
+  }
+}
+
+async function sendTelegramMessage(req, res) {
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { ok: false, error: 'Method not allowed' });
+    return;
+  }
+  if (rejectCrossOrigin(req, res)) return;
+
+  try {
+    const payload = await readJsonBody(req);
+    resolveSession(loadAuthStore(), payload.sessionId);
+    const delivered = await deliverTelegramText(payload.text, payload.deliveryId);
+    sendJson(res, 200, { ok: true, ...delivered });
   } catch (error) {
-    send(res, 400, JSON.stringify({ ok: false, error: error.message }), 'application/json; charset=utf-8');
+    sendJson(res, error.status || 502, { ok: false, error: error.message || 'Telegram delivery failed' });
+  }
+}
+
+function signalDocumentId(signal) {
+  return String(signal?.id || '').replace(/\//g, '_').slice(0, 240);
+}
+
+function normalizeTradeSignal(input) {
+  const signal = input && typeof input === 'object' ? input : {};
+  const id = signalDocumentId(signal);
+  const entry = Number(signal.entry);
+  const sl = Number(signal.sl);
+  const tp1 = Number(signal.tp1);
+  const tp2 = Number(signal.tp2);
+  const tp3 = Number(signal.tp3);
+  if (!id || ![entry, sl, tp1, tp2, tp3].every(Number.isFinite)) {
+    throw new Error('Invalid trade signal');
+  }
+  const isBuy = signal.isBuy === true || String(signal.side || '').toUpperCase() === 'BUY';
+  return {
+    id,
+    number: Number.isFinite(Number(signal.number)) ? Number(signal.number) : 0,
+    symbol: String(signal.symbol || 'XAUUSD').trim().toUpperCase().slice(0, 40),
+    side: isBuy ? 'BUY' : 'SELL',
+    isBuy,
+    interval: String(signal.interval || '5m').slice(0, 12),
+    entry,
+    sl,
+    originalSl: Number.isFinite(Number(signal.originalSl)) ? Number(signal.originalSl) : sl,
+    tp1,
+    tp2,
+    tp3,
+    tpHits: Array.isArray(signal.tpHits) ? signal.tpHits.filter((item) => ['TP1', 'TP2', 'TP3'].includes(item)) : [],
+    breakEvenMoved: Boolean(signal.breakEvenMoved),
+    closed: Boolean(signal.closed),
+    closedAt: signal.closedAt || null,
+    signalTime: signal.time || null,
+  };
+}
+
+async function handleTradeSignals(req, res, url) {
+  if (req.method !== 'POST' || !['/api/signals/sync', '/api/signals/open'].includes(url.pathname)) {
+    sendJson(res, 405, { ok: false, error: 'Method not allowed' });
+    return;
+  }
+  if (rejectCrossOrigin(req, res)) return;
+
+  try {
+    const payload = await readJsonBody(req);
+    const auth = resolveSession(loadAuthStore(), payload.sessionId);
+    const db = getFirestore();
+    if (!db) throw sessionError(503, 'Firebase server is not configured.');
+    const collection = db.collection('telegramSignals');
+
+    if (url.pathname === '/api/signals/open') {
+      const snapshot = await collection.where('ownerId', '==', auth.user.id).get();
+      const signals = snapshot.docs
+        .map((document) => document.data())
+        .filter((signal) => signal && !signal.closed)
+        .sort((left, right) => String(left.updatedAt || '').localeCompare(String(right.updatedAt || '')))
+        .slice(-10);
+      sendJson(res, 200, { ok: true, signals });
+      return;
+    }
+
+    const incoming = Array.isArray(payload.signals) ? payload.signals.slice(-10) : [];
+    const batch = db.batch();
+    const syncedAt = nowIso();
+    for (const input of incoming) {
+      const signal = normalizeTradeSignal(input);
+      batch.set(collection.doc(signal.id), {
+        ...signal,
+        ownerId: auth.user.id,
+        owner: auth.user.username,
+        updatedAt: syncedAt,
+      }, { merge: true });
+    }
+    if (incoming.length) await batch.commit();
+    sendJson(res, 200, { ok: true, count: incoming.length });
+  } catch (error) {
+    sendJson(res, error.status || 400, { ok: false, error: error.message || 'Signal sync failed' });
+  }
+}
+
+function twelveDataSignalSymbol(symbol) {
+  const normalized = String(symbol || '').trim().toUpperCase();
+  if (normalized === 'XAUUSD' || normalized === 'XAU/USD' || normalized === 'GOLD') return 'XAU/USD';
+  if (normalized === 'XAGUSD' || normalized === 'XAG/USD' || normalized === 'SILVER') return 'XAG/USD';
+  if (/^[A-Z0-9]+USDT$/.test(normalized)) return `${normalized.slice(0, -4)}/USD`;
+  return String(symbol || '').trim().toUpperCase();
+}
+
+async function fetchSignalPrice(symbol) {
+  const target = new URL('https://api.twelvedata.com/price');
+  target.searchParams.set('symbol', twelveDataSignalSymbol(symbol));
+  let lastError = 'No Twelve Data key available';
+  for (const key of marketApiKeys) {
+    target.searchParams.set('apikey', key);
+    try {
+      const response = await fetch(target, { headers: { 'User-Agent': 'Mozilla/5.0 CRAZII-signal-monitor' } });
+      const body = await response.json();
+      const price = Number(body?.price);
+      if (response.ok && Number.isFinite(price)) return price;
+      lastError = body?.message || `Twelve Data returned ${response.status}`;
+    } catch (error) {
+      lastError = error.message;
+    }
+  }
+  throw new Error(`Twelve Data price unavailable for ${symbol}: ${lastError}`);
+}
+
+function formatServerTradeUpdate(signal, result, price) {
+  const resultText = String(result).toUpperCase();
+  const targetPrice = resultText === 'BE' ? signal.entry : resultText === 'SL' ? signal.sl : signal[resultText.toLowerCase()];
+  return [
+    `${resultText.startsWith('TP') ? '✅' : resultText === 'BE' ? '🟡' : '❌'} KÈO ${signal.number || ''} ${signal.side} ĐÃ ${resultText}`.trim(),
+    `Mã: ${signal.symbol} | Khung: ${signal.interval}`,
+    `Entry: ${Number(signal.entry).toFixed(2)} | ${resultText}: ${Number(targetPrice).toFixed(2)}`,
+    `Giá kiểm tra: ${Number(price).toFixed(2)}`,
+  ].join('\n');
+}
+
+async function monitorTradeSignals() {
+  if (signalMonitorRunning) return;
+  const db = getFirestore();
+  if (!db) return;
+  signalMonitorRunning = true;
+  try {
+    const snapshot = await db.collection('telegramSignals').where('closed', '==', false).get();
+    const prices = new Map();
+    for (const document of snapshot.docs) {
+      const signal = document.data();
+      if (!prices.has(signal.symbol)) {
+        try {
+          prices.set(signal.symbol, await fetchSignalPrice(signal.symbol));
+        } catch (error) {
+          console.warn(`Signal monitor price error for ${signal.symbol}: ${error.message}`);
+          prices.set(signal.symbol, null);
+        }
+      }
+      const price = prices.get(signal.symbol);
+      if (!Number.isFinite(price)) continue;
+
+      const updates = { lastPrice: price, checkedAt: nowIso(), updatedAt: nowIso() };
+      const tpHits = Array.isArray(signal.tpHits) ? [...signal.tpHits] : [];
+      const isBuy = signal.isBuy === true || signal.side === 'BUY';
+      const hitSl = isBuy ? price <= Number(signal.sl) : price >= Number(signal.sl);
+      if (hitSl) {
+        const result = signal.breakEvenMoved && Math.abs(Number(signal.sl) - Number(signal.entry)) < 0.000001 ? 'BE' : 'SL';
+        await deliverTelegramText(formatServerTradeUpdate(signal, result, price), `result:${signal.id}:${result}`);
+        Object.assign(updates, { closed: true, closedAt: Date.now(), closeResult: result, tpHits });
+        await document.ref.set(updates, { merge: true });
+        continue;
+      }
+
+      for (const name of ['TP1', 'TP2', 'TP3']) {
+        if (tpHits.includes(name)) continue;
+        const target = Number(signal[name.toLowerCase()]);
+        const hitTarget = isBuy ? price >= target : price <= target;
+        if (!hitTarget) continue;
+        await deliverTelegramText(formatServerTradeUpdate(signal, name, price), `result:${signal.id}:${name}`);
+        tpHits.push(name);
+        if (name === 'TP1') {
+          updates.originalSl = Number.isFinite(Number(signal.originalSl)) ? Number(signal.originalSl) : Number(signal.sl);
+          updates.sl = Number(signal.entry);
+          updates.breakEvenMoved = true;
+          signal.sl = updates.sl;
+          signal.breakEvenMoved = true;
+        }
+        if (name === 'TP3') Object.assign(updates, { closed: true, closedAt: Date.now(), closeResult: name });
+      }
+      updates.tpHits = tpHits;
+      await document.ref.set(updates, { merge: true });
+    }
+  } catch (error) {
+    console.error(`Signal monitor error: ${error.message}`);
+  } finally {
+    signalMonitorRunning = false;
   }
 }
 
@@ -757,6 +993,11 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (url.pathname.startsWith('/api/signals/')) {
+    handleTradeSignals(req, res, url);
+    return;
+  }
+
   if (url.pathname.startsWith('/api/auth/')) {
     handleAuth(req, res, url);
     return;
@@ -822,4 +1063,6 @@ const server = http.createServer((req, res) => {
 
 server.listen(port, host, () => {
   console.log(`CRAZII chart running at http://127.0.0.1:${port} (LAN: http://<server-ip>:${port})`);
+  monitorTradeSignals();
+  setInterval(monitorTradeSignals, Number(process.env.SIGNAL_MONITOR_MS || 10_000));
 });

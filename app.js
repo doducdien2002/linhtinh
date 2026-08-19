@@ -153,6 +153,50 @@ let authState = {
   deviceId: window.localStorage.getItem('craziiDeviceId') || '',
   user: null,
 };
+let firebaseSignalSyncTimer = null;
+let firebaseSignalSyncErrorShown = false;
+
+async function syncTelegramSignalStatesToFirebase(signals = telegramSignalStates) {
+  if (!authState.sessionId || !Array.isArray(signals) || !signals.length) return;
+
+  try {
+    await authPost('/api/signals/sync', { sessionId: authState.sessionId, signals });
+    firebaseSignalSyncErrorShown = false;
+  } catch (error) {
+    console.warn('Firebase server sync failed:', error);
+    if (!firebaseSignalSyncErrorShown) {
+      el.status.textContent = 'Firebase server chưa ghi được kèo; vẫn lưu cục bộ.';
+      firebaseSignalSyncErrorShown = true;
+    }
+  }
+}
+
+function scheduleFirebaseSignalSync(signals = telegramSignalStates) {
+  window.clearTimeout(firebaseSignalSyncTimer);
+  const snapshot = Array.isArray(signals) ? signals.map((signal) => ({ ...signal })) : [];
+  firebaseSignalSyncTimer = window.setTimeout(() => {
+    syncTelegramSignalStatesToFirebase(snapshot);
+  }, 250);
+}
+
+async function restoreTelegramSignalStatesFromFirebase() {
+  if (!authState.sessionId) return;
+
+  try {
+    const data = await authPost('/api/signals/open', { sessionId: authState.sessionId });
+    const restored = (Array.isArray(data.signals) ? data.signals : [])
+      .filter((signal) => signal && !signal.closed && signal.id && Number.isFinite(Number(signal.entry)))
+      .slice(-TELEGRAM_SIGNAL_MAX_OPEN);
+    if (!restored.length) return;
+
+    const merged = new Map(telegramSignalStates.map((signal) => [signal.id, signal]));
+    for (const signal of restored) merged.set(signal.id, signal);
+    telegramSignalStates = [...merged.values()].slice(-TELEGRAM_SIGNAL_MAX_OPEN);
+    saveTelegramSignalStates();
+  } catch (error) {
+    console.warn('Firebase signal restore failed:', error);
+  }
+}
 
 const ADD_SIGNAL_TP_MIN_MOVE = 10;
 const ADD_SIGNAL_TP_MAX_MOVE = 10;
@@ -543,7 +587,7 @@ async function login(username, password) {
   el.sessionKickNotice?.classList.add('hidden');
   syncAuthUi();
   startAuthHeartbeat();
-  loadChart();
+  loadChart().then(restoreTelegramSignalStatesFromFirebase);
 }
 
 function formatAuthTime(value) {
@@ -624,7 +668,7 @@ async function bootApp() {
   getDeviceId();
   const restored = await restoreAuthSession();
   if (restored) {
-    loadChart();
+    loadChart().then(restoreTelegramSignalStatesFromFirebase);
   } else if (!el.sessionKickNotice || el.sessionKickNotice.classList.contains('hidden')) {
     showLogin();
   }
@@ -1656,6 +1700,93 @@ function filterFirstSignalPerCycle(markers) {
   return filtered;
 }
 
+function averageAtrAround(atrValues, index, lookback = 20) {
+  const start = Math.max(0, index - lookback + 1);
+  const slice = atrValues.slice(start, index + 1).filter(Number.isFinite);
+  if (!slice.length) return 0;
+  return slice.reduce((sum, value) => sum + value, 0) / slice.length;
+}
+
+function filterMarkersByTrendAndVolatility(markers, candles, { atrValues, trendPhases }, volatilityRatio = 0.85) {
+  return markers.filter((marker) => {
+    const side = markerSignalSide(marker);
+    if (!side) return true;
+
+    // Chỉ giữ tín hiệu thuận theo xu hướng hiện tại của nến (buy trong sóng tăng,
+    // sell trong sóng giảm) — loại các tín hiệu ngược pha gây nhiễu trong vùng giằng co.
+    const trendSide = displayedCandleSide(candles, trendPhases, marker.index);
+    if (trendSide !== side) return false;
+
+    // Chỉ giữ tín hiệu khi biến động (ATR) tại thời điểm đó không quá thấp so với
+    // trung bình gần đây — tránh bắn tín hiệu trong vùng đi ngang, biên độ hẹp.
+    const atrNow = Number(atrValues[marker.index]);
+    const atrAvg = averageAtrAround(atrValues, marker.index);
+    if (!Number.isFinite(atrNow) || !Number.isFinite(atrAvg) || atrAvg <= 0) return true;
+    return atrNow >= atrAvg * volatilityRatio;
+  });
+}
+
+function filterMarkersByOutcomeGap(markers, candles, tpMove = TRADE_TP_MAX_MOVE, slMove = TRADE_SL_MOVE) {
+  if (!markers.length) return [];
+
+  const sorted = [...markers].sort((a, b) => a.index - b.index);
+  const filtered = [];
+  let lastKept = null;
+
+  for (const marker of sorted) {
+    const side = markerSignalSide(marker);
+    if (!side) {
+      filtered.push(marker);
+      continue;
+    }
+
+    if (!lastKept) {
+      filtered.push(marker);
+      lastKept = marker;
+      continue;
+    }
+
+    const lastSide = markerSignalSide(lastKept);
+
+    // Tín hiệu CÙNG CHIỀU (tiếp diễn xu hướng) được giữ ngay, không cần chờ lệnh
+    // trước đóng — vì đây không phải đảo lệnh, không có gì mâu thuẫn cần chờ giải quyết.
+    if (lastSide && side === lastSide) {
+      filtered.push(marker);
+      lastKept = marker;
+      continue;
+    }
+
+    const lastEntry = Number(candles[lastKept.index]?.close);
+    if (!Number.isFinite(lastEntry)) {
+      filtered.push(marker);
+      lastKept = marker;
+      continue;
+    }
+
+    // Tín hiệu NGƯỢC CHIỀU (đảo lệnh) chỉ được chấp nhận sau khi lệnh trước đã
+    // thực sự đóng hẳn — chạm TP3 (tpMove) hoặc dính SL (slMove) — tránh đảo lệnh
+    // non trên những cú giật ngược tạm thời rồi giá quay lại xu hướng cũ.
+    let outcomeReached = false;
+    for (let i = lastKept.index + 1; i <= marker.index && i < candles.length; i += 1) {
+      const candle = candles[i];
+      if (!candle) continue;
+      const favorableMove = lastSide === 'buy' ? candle.high - lastEntry : lastEntry - candle.low;
+      const adverseMove = lastSide === 'buy' ? lastEntry - candle.low : candle.high - lastEntry;
+      if (favorableMove >= tpMove || adverseMove >= slMove) {
+        outcomeReached = true;
+        break;
+      }
+    }
+
+    if (!outcomeReached) continue;
+
+    filtered.push(marker);
+    lastKept = marker;
+  }
+
+  return filtered;
+}
+
 function displayedCandleSide(candles, trendPhases, index) {
   return trendPhases[index]?.side || candleSide(candles[index]);
 }
@@ -1813,6 +1944,7 @@ function computeHighProbabilityMarkers(candles, levels, { atrValues, ksi, bullis
 function computeBuyConfluenceMarkers(candles, levels, { atrValues, ksi, bullishness, trendPhases }) {
   const lookback = 4;
   const minGap = 6;
+  const maxExtensionAtr = 6;
   const rawMarkers = [];
 
   const getSetup = (endIndex) => {
@@ -1834,12 +1966,14 @@ function computeBuyConfluenceMarkers(candles, levels, { atrValues, ksi, bullishn
     while (cycleStart > 0 && displayedCandleSide(candles, trendPhases, cycleStart - 1) === 'buy') {
       cycleStart -= 1;
     }
+    const swingLow = Math.min(...candles.slice(cycleStart, endIndex + 1).map((item) => item.low));
 
     return {
       candle,
       index: endIndex,
       atrNow,
       cycleStart,
+      swingLow,
       firstLow: firstCandle.low,
       setupHigh: Math.max(...windowCandles.map((item) => item.high)),
       setupLow: Math.min(...windowCandles.map((item) => item.low)),
@@ -1859,8 +1993,20 @@ function computeBuyConfluenceMarkers(candles, levels, { atrValues, ksi, bullishn
     const atrNow = Math.max(atrValues[triggerIndex] || candle.high - candle.low, Number.EPSILON);
     const pullbackDepth = setup.setupClose - candle.low;
     const breaksFirstCandle = candle.low < setup.firstLow;
+    // Chặn tín hiệu BUY khi sóng tăng đã đi quá xa (dễ mua đỉnh trước khi đảo chiều).
+    const extension = (candle.close - setup.swingLow) / atrNow;
+    const tooExtended = extension > maxExtensionAtr;
+    // Chặn tín hiệu BUY nếu ngay tại cây nến kích hoạt, momentum (histogram boys) đã
+    // đảo sang đỏ — tránh bắn BUY đúng lúc đà tăng vừa gãy.
+    const triggerTurnedBearish = ksi[triggerIndex]?.color === COLORS.boysSell;
+    // Chặn tín hiệu BUY nếu chính cây trigger đã có dấu hiệu bị bán ép — đóng cửa dưới
+    // mở cửa (nến đỏ) hoặc bóng trên dài — dù setup 4 cây trước vẫn hợp lệ, đây là dấu
+    // hiệu mua đỉnh (không có chỉ báo lực mua liên tục như bên sell nên dùng price action).
+    const triggerRange = Math.max(candle.high - candle.low, Number.EPSILON);
+    const triggerUpperWick = candle.high - Math.max(candle.open, candle.close);
+    const triggerToppingCandle = candle.close < candle.open || triggerUpperWick / triggerRange >= 0.3;
 
-    if (breaksFirstCandle || rawMarkers.some((marker) => marker.cycleStart === setup.cycleStart)) continue;
+    if (breaksFirstCandle || tooExtended || triggerTurnedBearish || triggerToppingCandle || rawMarkers.some((marker) => marker.cycleStart === setup.cycleStart)) continue;
 
     rawMarkers.push({
       index: triggerIndex,
@@ -1882,6 +2028,7 @@ function computeBuyConfluenceMarkers(candles, levels, { atrValues, ksi, bullishn
 function computeSellConfluenceMarkers(candles, levels, { atrValues, ksi, bullishness, trendPhases }) {
   const lookback = 4;
   const minGap = levels.interval === '1d' ? 8 : 14;
+  const maxExtensionAtr = 6;
   const rawMarkers = [];
 
   const getSetup = (endIndex) => {
@@ -1905,12 +2052,14 @@ function computeSellConfluenceMarkers(candles, levels, { atrValues, ksi, bullish
     while (cycleStart > 0 && displayedCandleSide(candles, trendPhases, cycleStart - 1) === 'sell') {
       cycleStart -= 1;
     }
+    const swingHigh = Math.max(...candles.slice(cycleStart, endIndex + 1).map((item) => item.high));
 
     return {
       candle,
       index: endIndex,
       atrNow,
       cycleStart,
+      swingHigh,
       firstHigh: firstCandle.high,
       setupHigh: Math.max(...windowCandles.map((item) => item.high)),
       setupLow: Math.min(...windowCandles.map((item) => item.low)),
@@ -1930,8 +2079,27 @@ function computeSellConfluenceMarkers(candles, levels, { atrValues, ksi, bullish
     const atrNow = Math.max(atrValues[triggerIndex] || candle.high - candle.low, Number.EPSILON);
     const pullbackDepth = candle.high - setup.setupClose;
     const breaksFirstCandle = candle.high > setup.firstHigh;
+    // Chặn tín hiệu SELL khi sóng giảm đã đi quá xa (dễ bán đáy trước khi đảo chiều).
+    const extension = (setup.swingHigh - candle.close) / atrNow;
+    const tooExtended = extension > maxExtensionAtr;
+    // Chặn tín hiệu SELL nếu ngay tại cây nến kích hoạt, momentum (histogram boys) đã
+    // đảo sang xanh — tránh bắn SELL đúng lúc đà giảm vừa gãy.
+    const triggerTurnedBullish = ksi[triggerIndex]?.color === COLORS.boysBuy;
+    // Chặn tín hiệu SELL nếu lực bán (bearishness) tại cây trigger đã cạn dần so với
+    // cây trước — giá vẫn giảm nhưng lực yếu đi là dấu hiệu quá đà, sắp đảo chiều (kiểu
+    // "bán đáy" như trong case bị báo lỗi).
+    // So với trung bình lực bán của cả 4 cây setup (mượt hơn, tránh bị 1 cây bất
+    // thường "cứu" điều kiện) — nếu lực bán tại trigger đã yếu hơn baseline này, coi
+    // là đang cạn đà, bất kể cây liền trước nó ra sao.
+    const bearishMagnitudeAtTrigger = Math.abs(bearishnessValue(bullishness, triggerIndex));
+    const momentumEasing = bearishMagnitudeAtTrigger === 0 || bearishMagnitudeAtTrigger < setup.bearishPressure;
+    // Chặn tín hiệu SELL nếu chính cây trigger đã có dấu hiệu bị mua đỡ — đóng cửa trên
+    // mở cửa (nến xanh) hoặc bóng dưới dài — đối xứng với check "topping" bên buy.
+    const triggerRange = Math.max(candle.high - candle.low, Number.EPSILON);
+    const triggerLowerWick = Math.min(candle.open, candle.close) - candle.low;
+    const triggerBottomingCandle = candle.close > candle.open || triggerLowerWick / triggerRange >= 0.3;
 
-    if (breaksFirstCandle || rawMarkers.some((marker) => marker.cycleStart === setup.cycleStart)) continue;
+    if (breaksFirstCandle || tooExtended || triggerTurnedBullish || momentumEasing || triggerBottomingCandle || rawMarkers.some((marker) => marker.cycleStart === setup.cycleStart)) continue;
 
     rawMarkers.push({
       index: triggerIndex,
@@ -2261,11 +2429,18 @@ function computeIndicators(candles, levels) {
   const probabilityMarkers = computeHighProbabilityMarkers(candles, levels, context);
   const buyConfluenceMarkers = computeBuyConfluenceMarkers(candles, levels, context);
   const sellConfluenceMarkers = computeSellConfluenceMarkers(candles, levels, context);
-  const baseConfluenceMarkers = filterConfluenceSpacing(
-    [...probabilityMarkers, ...buyConfluenceMarkers, ...sellConfluenceMarkers],
-    levels.interval === '1d' ? 6 : 5,
+  const baseConfluenceMarkers = filterMarkersByOutcomeGap(
+    filterMarkersByTrendAndVolatility(
+      filterConfluenceSpacing(
+        [...probabilityMarkers, ...buyConfluenceMarkers, ...sellConfluenceMarkers],
+        levels.interval === '1d' ? 6 : 5,
+      ),
+      candles,
+      context,
+    ),
+    candles,
   );
-  const baseMarkers = filterFirstSignalPerCycle(baseConfluenceMarkers);
+  const baseMarkers = [...baseConfluenceMarkers].sort((a, b) => a.index - b.index);
   const tpWindowAddMarkers = hideAddSignals ? [] : computeTpWindowAddMarkers(candles, levels, context, baseMarkers);
   const rawAddMarkers = hideAddSignals ? [] : computeAddMarkers(candles, levels, context);
   const cycleContinuationAddMarkers = hideAddSignals ? [] : computeCycleContinuationAddMarkers(candles, levels, context);
@@ -2277,7 +2452,7 @@ function computeIndicators(candles, levels) {
         ...filterTpWindowAddSignals(filterTrueAddSignals(rawAddMarkers, baseMarkers), baseMarkers, candles),
       ];
   const confluenceMarkers = mergeTradeMarkers(baseMarkers, trueAddMarkers, levels.interval === '1d' ? 2 : 2);
-  const tradeMarkers = filterFirstSignalPerCycle(confluenceMarkers);
+  const tradeMarkers = [...confluenceMarkers].sort((a, b) => a.index - b.index);
   const visibleTradeMarkers = diamondLine && !hideDiamondSignals
     ? tradeMarkers.filter((marker) => marker.index < diamondLine.index)
     : tradeMarkers;
@@ -2813,6 +2988,7 @@ function saveTelegramSignalStates() {
   } catch (error) {
     console.warn(error);
   }
+  scheduleFirebaseSignalSync(telegramSignalStates);
 }
 
 function formatTradeSignalMessage(signal) {
@@ -2887,7 +3063,7 @@ function formatTelegramCloseMessage(signal, result, price) {
     followUp,
   ].filter(Boolean).join('\n');
 }
-async function sendTelegramMessage(text) {
+async function sendTelegramMessage(text, deliveryId = '') {
   if (!authState.sessionId) {
     el.status.textContent = 'Telegram loi: can dang nhap';
     return false;
@@ -2897,13 +3073,15 @@ async function sendTelegramMessage(text) {
     const response = await fetch('/api/telegram/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, sessionId: authState.sessionId }),
+      body: JSON.stringify({ text, deliveryId, sessionId: authState.sessionId }),
     });
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
       throw new Error(data.description || data.error || `Telegram returned ${response.status}`);
     }
-    el.status.textContent = `Đã gửi Telegram ${new Date().toLocaleTimeString()}`;
+    el.status.textContent = data.deduplicated
+      ? 'Telegram: thông báo này đã được gửi trước đó.'
+      : `Đã gửi Telegram ${new Date().toLocaleTimeString()}`;
     return true;
   } catch (error) {
     console.warn(error);
@@ -2939,7 +3117,10 @@ async function activateTelegramSignal(signal, levels) {
     breakEvenMoved: false,
     closed: false,
   };
-  const sent = await sendTelegramMessage(formatTelegramOpenMessage(nextSignalState));
+  const sent = await sendTelegramMessage(
+    formatTelegramOpenMessage(nextSignalState),
+    `open:${nextSignalState.id}`,
+  );
   if (!sent) return;
   telegramSignalStates = [
     ...openSignals,
@@ -2965,7 +3146,10 @@ function scheduleTelegramPriceRetry(price) {
 }
 
 async function notifyTelegramTradeResult(signal, result, price) {
-  const sent = await sendTelegramMessage(formatTelegramCloseMessage(signal, result, price));
+  const sent = await sendTelegramMessage(
+    formatTelegramCloseMessage(signal, result, price),
+    `result:${signal.id}:${String(result || '').toUpperCase()}`,
+  );
   if (!sent) scheduleTelegramPriceRetry(price);
   return sent;
 }

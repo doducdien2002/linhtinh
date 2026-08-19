@@ -1,6 +1,9 @@
 auth.store.json
 telegram.config.json
+telegram.delivery.store.json
 .env
 .env.*
 *.log
 node_modules/
+.npm-cache/
+firebase.service-account.json
