@@ -212,7 +212,7 @@ body.auth-locked .app-shell {
   position: fixed;
   top: calc(100% + 8px);
   right: 0;
-  z-index: 20;
+  z-index: 9999;
   display: grid;
   gap: 7px;
   min-width: 168px;
@@ -262,7 +262,7 @@ body.auth-locked .app-shell {
   position: fixed;
   top: calc(100% + 8px);
   right: 18px;
-  z-index: 30;
+  z-index: 9999;
   display: grid;
   grid-template-columns: minmax(150px, 1fr) minmax(320px, 2fr) auto auto auto;
   align-items: start;
@@ -857,9 +857,10 @@ select {
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42), 0 0 22px rgba(34, 230, 111, 0.08);
   color: #f4f7fb;
   backdrop-filter: blur(10px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-.signal-notice.hidden {
+.signal-notice.signal-collapsed {
   display: none;
 }
 
@@ -1610,12 +1611,35 @@ select {
   }
 
   .signal-notice {
-    top: 8px;
-    right: 8px;
-    left: 8px;
+    position: fixed;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
     width: auto;
-    max-height: 50vh;
+    max-height: 62vh;
+    border-left: none;
+    border-top: 3px solid #009900;
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.45);
     -webkit-overflow-scrolling: touch;
+    transform: translateY(0);
+    transition: transform 0.26s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .signal-notice.signal-collapsed {
+    display: block;
+    transform: translateY(100%);
+    pointer-events: none;
+  }
+
+  .signal-notice.signal-buy {
+    border-top-color: #6aff00;
+  }
+
+  .signal-notice.signal-sell {
+    border-top-color: #ff2d15;
   }
 
   .signal-head {

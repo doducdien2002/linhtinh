@@ -3427,12 +3427,12 @@ function syncSignalToggle(hasSignal) {
 
   if (!hasSignal) {
     signalNoticeCollapsed = true;
-    el.signalNotice.classList.add('hidden');
+    el.signalNotice.classList.add('signal-collapsed');
     if (el.sendTelegram) el.sendTelegram.disabled = true;
     return;
   }
 
-  el.signalNotice.classList.toggle('hidden', signalNoticeCollapsed);
+  el.signalNotice.classList.toggle('signal-collapsed', signalNoticeCollapsed);
   el.signalToggle.classList.toggle('signal-panel-open', !signalNoticeCollapsed);
   if (el.sendTelegram) el.sendTelegram.disabled = false;
 }
@@ -3458,7 +3458,7 @@ function renderSignalNotice(candles, markers, levels) {
   latestSignalTelegram = { signal, levels };
   signalDetectionReady = true;
 
-  el.signalNotice.classList.remove('hidden', 'signal-buy', 'signal-sell', 'signal-pulse');
+  el.signalNotice.classList.remove('signal-collapsed', 'signal-buy', 'signal-sell', 'signal-pulse');
   el.signalNotice.classList.add(signal.isBuy ? 'signal-buy' : 'signal-sell');
   el.signalNoticeTitle.textContent = `${signal.label} ${signal.entryZone}`;
   el.signalNoticeText.textContent = signal.copy;
