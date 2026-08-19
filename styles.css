@@ -210,7 +210,10 @@ body.auth-locked .app-shell {
 
 .signal-filter-menu {
   position: fixed;
-  top: calc(100% + 8px);
+  /* Fallback only — JS sets an exact px "top" once opened. See the note on
+     .control-hidden: with position:fixed, a % top is relative to the whole
+     viewport, not the toolbar, so it must stay a fixed px guess. */
+  top: 88px;
   right: 0;
   z-index: 9999;
   display: grid;
@@ -260,7 +263,12 @@ body.auth-locked .app-shell {
 
 .control-hidden {
   position: fixed;
-  top: calc(100% + 8px);
+  /* Fallback position only (JS overrides this with an exact px value once the
+     panel opens). NOTE: with position:fixed, "top: 100%" resolves against the
+     viewport height, not the toolbar — so it must NOT be a percentage, or the
+     panel renders below the visible screen (and can't be reached because the
+     page can't scroll). Use a fixed px guess close to the toolbar height instead. */
+  top: 88px;
   right: 18px;
   z-index: 9999;
   display: grid;
@@ -269,6 +277,9 @@ body.auth-locked .app-shell {
   gap: 10px;
   width: min(860px, calc(100vw - 36px));
   min-width: 0;
+  max-height: min(72vh, 560px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 12px;
   border: 1px solid #d8e0eb;
   border-radius: 8px;
@@ -1406,6 +1417,7 @@ select {
   }
 
   .control-hidden {
+    top: 64px;
     left: 12px;
     right: 12px;
     grid-template-columns: minmax(0, 1fr) minmax(260px, 2fr) auto auto auto;

@@ -3924,23 +3924,45 @@ function applySignalFilterChange() {
 
 function positionFixedPanel(panel, anchorEl, { align = 'right' } = {}) {
   if (!panel || !anchorEl) return;
-  const anchorRect = anchorEl.getBoundingClientRect();
   const margin = 8;
-  panel.style.top = `${Math.round(anchorRect.bottom + margin)}px`;
-  panel.style.right = 'auto';
-  panel.style.left = '0px';
+  const viewportHeight = window.visualViewport?.height || window.innerHeight;
+  const viewportWidth = window.visualViewport?.width || window.innerWidth;
 
-  // Measure natural width/position first, then clamp within the viewport.
-  const panelRect = panel.getBoundingClientRect();
-  const viewportWidth = window.innerWidth;
-  let left = align === 'right'
-    ? anchorRect.right - panelRect.width
-    : anchorRect.left;
-  left = Math.max(8, Math.min(left, viewportWidth - panelRect.width - 8));
-  panel.style.left = `${Math.round(left)}px`;
+  const place = () => {
+    if (panel.classList.contains('hidden')) return; // closed again before we ran
+    const anchorRect = anchorEl.getBoundingClientRect();
+    panel.style.top = `${Math.round(anchorRect.bottom + margin)}px`;
+    panel.style.right = 'auto';
+    panel.style.left = '0px';
 
-  const maxHeight = window.innerHeight - anchorRect.bottom - margin - 8;
-  panel.style.maxHeight = `${Math.max(160, Math.round(maxHeight))}px`;
+    // Measure natural width/position first, then clamp within the viewport.
+    const panelRect = panel.getBoundingClientRect();
+    let left = align === 'right'
+      ? anchorRect.right - panelRect.width
+      : anchorRect.left;
+    left = Math.max(8, Math.min(left, viewportWidth - panelRect.width - 8));
+    panel.style.left = `${Math.round(left)}px`;
+
+    // Never let the panel bottom fall below the visible viewport: if the
+    // anchor is low on screen, flip the panel to open upward instead of
+    // clamping it to a sliver that's effectively invisible.
+    let maxHeight = viewportHeight - anchorRect.bottom - margin - 8;
+    if (maxHeight < 160 && anchorRect.top - margin - 8 > 160) {
+      const upHeight = Math.min(anchorRect.top - margin - 8, viewportHeight * 0.72);
+      panel.style.top = 'auto';
+      panel.style.bottom = `${Math.round(viewportHeight - anchorRect.top + margin)}px`;
+      panel.style.maxHeight = `${Math.round(upHeight)}px`;
+    } else {
+      panel.style.bottom = 'auto';
+      panel.style.maxHeight = `${Math.max(160, Math.round(maxHeight))}px`;
+    }
+  };
+
+  // Run once immediately (covers the common case) and once more on the next
+  // animation frame in case the "hidden" class removal hasn't been painted
+  // yet (seen on some mobile browsers), so the anchor rect is never stale.
+  place();
+  requestAnimationFrame(place);
 }
 
 function setSignalFilterMenuOpen(open) {
@@ -3980,6 +4002,18 @@ document.querySelector('.toolbar')?.addEventListener('scroll', () => {
   setSignalFilterMenuOpen(false);
   setAdvancedControlsOpen(false);
 }, { passive: true });
+window.addEventListener('resize', () => {
+  if (!el.advancedControlsPanel?.classList.contains('hidden')) {
+    positionFixedPanel(el.advancedControlsPanel, el.advancedControlsButton, { align: 'right' });
+  }
+  if (!el.signalFilterMenu?.classList.contains('hidden')) {
+    positionFixedPanel(el.signalFilterMenu, el.signalFilterButton, { align: 'right' });
+  }
+});
+window.addEventListener('orientationchange', () => {
+  setSignalFilterMenuOpen(false);
+  setAdvancedControlsOpen(false);
+});
 el.hideSignal?.addEventListener('click', () => {
   signalNoticeCollapsed = true;
   syncSignalToggle(Boolean(latestSignalCopy));
@@ -4188,23 +4222,3 @@ syncLevelVisibilityControls();
 syncTimeframeButtons();
 syncDrawingToolButtons();
 bootApp();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
