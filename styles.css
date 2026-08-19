@@ -1375,16 +1375,30 @@ select {
 
   .toolbar {
     position: relative;
-    min-height: 92px;
-    flex-wrap: wrap;
+    min-height: 54px;
+    flex-wrap: nowrap;
+    align-items: center;
     gap: 8px;
-    padding: 10px 8px;
-    padding-top: max(10px, env(safe-area-inset-top));
+    padding: 8px;
+    padding-top: max(8px, env(safe-area-inset-top));
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .toolbar::-webkit-scrollbar {
+    display: none;
   }
 
   .symbol-title {
-    min-width: 136px;
-    font-size: 16px;
+    position: sticky;
+    left: 0;
+    z-index: 5;
+    flex: 0 0 auto;
+    min-width: 0;
+    padding-right: 8px;
+    font-size: 15px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   }
 
   .control-hidden {
@@ -1405,8 +1419,10 @@ select {
   .chart-frame {
     height: auto;
     min-height: 0;
-    margin: 0 6px 6px;
-    border-radius: 6px;
+    margin: 0;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
   }
 
   #chart {
@@ -1427,14 +1443,15 @@ select {
   }
 
   .chart-actions {
-    flex-wrap: wrap;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
     gap: 5px;
-    -webkit-overflow-scrolling: touch;
   }
 
   .account-actions {
+    flex: 0 0 auto;
     min-width: 0;
-    margin-left: auto;
+    margin-left: 4px;
   }
 
   .timeframe-button,
@@ -1503,26 +1520,14 @@ select {
   .toolbar {
     position: relative;
     align-items: center;
-    min-height: 86px;
-  }
-
-  .symbol-title {
-    flex: 1 1 auto;
+    min-height: 50px;
   }
 
   .chart-actions {
-    order: 3;
-    width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+    flex: 0 0 auto;
     flex-wrap: nowrap;
     justify-content: flex-start;
     padding: 4px;
-    scrollbar-width: none;
-  }
-
-  .chart-actions::-webkit-scrollbar {
-    display: none;
   }
 
   .timeframe-button,
@@ -1534,6 +1539,7 @@ select {
   }
 
   .account-actions {
+    flex: 0 0 auto;
     gap: 5px;
   }
 

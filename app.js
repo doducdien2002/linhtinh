@@ -98,6 +98,26 @@ let markerApi;
 let markerLayer;
 let levelLayer;
 let drawLayer;
+let chartResizeObserver;
+let chartResizeFrame = null;
+
+function applyChartSize() {
+  if (!chart) return;
+  const width = el.chart.clientWidth;
+  const height = el.chart.clientHeight;
+  if (width > 0 && height > 0) {
+    chart.applyOptions({ width, height });
+  }
+}
+
+function ensureChartResizeObserver() {
+  if (chartResizeObserver || typeof ResizeObserver === 'undefined') return;
+  chartResizeObserver = new ResizeObserver(() => {
+    if (chartResizeFrame) cancelAnimationFrame(chartResizeFrame);
+    chartResizeFrame = requestAnimationFrame(applyChartSize);
+  });
+  chartResizeObserver.observe(el.chart);
+}
 let latestMarkers = [];
 let latestLevelItems = [];
 let latestDiamondLine = null;
@@ -2880,6 +2900,10 @@ function initChart() {
     renderDiamondMarkers();
     renderDrawings();
   });
+
+  ensureChartResizeObserver();
+  requestAnimationFrame(applyChartSize);
+  window.setTimeout(applyChartSize, 300);
 }
 
 function nearestLevel(levels) {
@@ -3850,15 +3874,20 @@ function handleChartAction(action) {
   }
 }
 
-window.addEventListener('resize', () => {
-  chart?.applyOptions({
-    width: el.chart.clientWidth,
-    height: el.chart.clientHeight,
-  });
+function handleViewportChange() {
+  applyChartSize();
   renderLevelBadges(latestLevelItems);
   renderDiamondMarkers();
   renderDrawings();
+}
+
+window.addEventListener('resize', handleViewportChange);
+window.addEventListener('orientationchange', () => {
+  window.setTimeout(handleViewportChange, 250);
 });
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', handleViewportChange);
+}
 
 el.reload.addEventListener('click', loadChart);
 function isAddStrategy(strategy) {
