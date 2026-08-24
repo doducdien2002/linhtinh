@@ -6,6 +6,20 @@
     <title>XAUUSD.ca KIM CHI VANG Indicator</title>
     <link rel="stylesheet" href="./styles.css?v=20260819-panel-fix" />
     <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+      .admin-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+      .admin-tab-button { background: #1b2231; color: #9fb0c9; border: 1px solid #2f3a4c; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+      .admin-tab-button.admin-tab-active { background: #2f3a4c; color: #fff; }
+      .admin-section.hidden { display: none; }
+      .admin-device-list { display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow: auto; }
+      .admin-device-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #2f3a4c; border-radius: 8px; background: #161c29; }
+      .admin-device-row.blocked { border-color: #ff2d15; background: #2a1216; }
+      .admin-device-info strong { display: block; color: #d1d4dc; font-size: 13px; }
+      .admin-device-info small { display: block; color: #7f8ba3; font-size: 11px; margin-top: 2px; }
+      .admin-device-actions { display: flex; gap: 6px; flex-shrink: 0; }
+      .admin-device-actions button { background: #1b2231; color: #d1d4dc; border: 1px solid #2f3a4c; border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+      .admin-device-actions button.danger { border-color: #ff2d15; color: #ff2d15; }
+    </style>
   </head>
   <body>
     <main class="app-shell">
@@ -205,17 +219,30 @@
           </div>
           <button id="closeAdminButton" type="button">Đóng</button>
         </div>
-        <form id="createUserForm" class="create-user-form">
-          <input id="newUsername" placeholder="Tài khoản mới" required spellcheck="false" />
-          <input id="newPassword" placeholder="Mật khẩu mới" required type="password" />
-          <select id="newRole">
-            <option value="user">User</option>
-            <option value="admin">Admin</option>
-          </select>
-          <button type="submit">Thêm</button>
-        </form>
-        <div id="adminError" class="admin-error"></div>
-        <div id="adminUserList" class="admin-user-list"></div>
+
+        <div class="admin-tabs">
+          <button id="adminTabUsers" class="admin-tab-button admin-tab-active" type="button">Tài khoản</button>
+          <button id="adminTabDevices" class="admin-tab-button" type="button">Thiết bị</button>
+        </div>
+
+        <section id="adminUsersSection" class="admin-section">
+          <form id="createUserForm" class="create-user-form">
+            <input id="newUsername" placeholder="Tài khoản mới" required spellcheck="false" />
+            <input id="newPassword" placeholder="Mật khẩu mới" required type="password" />
+            <select id="newRole">
+              <option value="user">User</option>
+              <option value="admin">Admin</option>
+            </select>
+            <button type="submit">Thêm</button>
+          </form>
+          <div id="adminError" class="admin-error"></div>
+          <div id="adminUserList" class="admin-user-list"></div>
+        </section>
+
+        <section id="adminDevicesSection" class="admin-section hidden">
+          <div id="adminDeviceError" class="admin-error"></div>
+          <div id="adminDeviceList" class="admin-device-list"></div>
+        </section>
       </div>
     </section>
 

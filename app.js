@@ -76,7 +76,31 @@ const el = {
   adminUserList: document.querySelector('#adminUserList'),
   sessionKickNotice: document.querySelector('#sessionKickNotice'),
   kickLoginAgain: document.querySelector('#kickLoginAgainButton'),
+  adminTabUsers: document.querySelector('#adminTabUsers'),
+  adminTabDevices: document.querySelector('#adminTabDevices'),
+  adminUsersSection: document.querySelector('#adminUsersSection'),
+  adminDevicesSection: document.querySelector('#adminDevicesSection'),
+  adminDeviceError: document.querySelector('#adminDeviceError'),
+  adminDeviceList: document.querySelector('#adminDeviceList'),
 };
+
+// --- DEVICE-AWARE FETCH --------------------------------------------------
+// Every request to our own /api/* endpoints is tagged with a persistent
+// device id (and a human-readable device name) via headers, so the server
+// can recognize/block a specific device instead of guessing from IP+UA.
+// Patched globally so we don't have to touch every individual fetch() call
+// scattered through this file.
+const nativeFetch = window.fetch.bind(window);
+window.fetch = (input, init = {}) => {
+  const requestUrl = typeof input === 'string' ? input : input?.url || '';
+  if (!requestUrl.startsWith('/api/')) return nativeFetch(input, init);
+
+  const headers = new Headers(init.headers || (typeof input === 'object' ? input.headers : undefined));
+  headers.set('x-device-id', getDeviceId());
+  headers.set('x-device-name', getDeviceName());
+  return nativeFetch(input, { ...init, headers });
+};
+// --------------------------------------------------------------------------
 
 const savedSource = window.localStorage.getItem('marketSource');
 if (savedSource === 'twelvedata') {
@@ -671,19 +695,96 @@ function escapeHtml(value) {
   }[char]));
 }
 
-async function adminPost(path, payload = {}) {
-  el.adminError.textContent = '';
+async function adminPost(path, payload = {}, reloadFn = loadAdminPanel, errorEl = el.adminError) {
+  errorEl.textContent = '';
   try {
     await authPost(path, { ...payload, sessionId: authState.sessionId });
-    await loadAdminPanel();
+    await reloadFn();
   } catch (error) {
     if (error.status === 409 || error.status === 401) {
       handleAuthError(error);
       return;
     }
-    el.adminError.textContent = error.message;
+    errorEl.textContent = error.message;
   }
 }
+
+// --- DEVICE MANAGEMENT (admin panel) --------------------------------------
+function setAdminTab(tab) {
+  const showUsers = tab === 'users';
+  el.adminTabUsers?.classList.toggle('admin-tab-active', showUsers);
+  el.adminTabDevices?.classList.toggle('admin-tab-active', !showUsers);
+  el.adminUsersSection?.classList.toggle('hidden', !showUsers);
+  el.adminDevicesSection?.classList.toggle('hidden', showUsers);
+  if (showUsers) {
+    loadAdminPanel();
+  } else {
+    loadAdminDevices();
+  }
+}
+
+async function loadAdminDevices() {
+  if (!authState.sessionId || !el.adminDeviceList) return;
+  el.adminDeviceError.textContent = '';
+  try {
+    const data = await authPost('/api/auth/admin/list-devices', { sessionId: authState.sessionId });
+    renderAdminDevices(data.devices || [], data.currentDeviceId || '');
+  } catch (error) {
+    el.adminDeviceError.textContent = error.message;
+  }
+}
+
+function renderAdminDevices(devices, currentDeviceId) {
+  if (!el.adminDeviceList) return;
+  if (!devices.length) {
+    el.adminDeviceList.innerHTML = '<div class="admin-device-row">Chưa có thiết bị nào truy cập.</div>';
+    return;
+  }
+
+  el.adminDeviceList.innerHTML = devices.map((device) => {
+    const isCurrent = device.id === currentDeviceId;
+    const name = device.deviceName || 'Thiết bị chưa đặt tên';
+    return `
+      <div class="admin-device-row ${device.blocked ? 'blocked' : ''}">
+        <div class="admin-device-info">
+          <strong>${escapeHtml(name)}${isCurrent ? ' (thiết bị này)' : ''}</strong>
+          <small>${escapeHtml(device.lastIp || '--')} · ${escapeHtml(device.lastUserAgent || '--')}</small>
+          <small>Lần cuối: ${formatAuthTime(device.lastSeenAt)} · ${Number(device.requestCount || 0)} request</small>
+        </div>
+        <div class="admin-device-actions">
+          ${device.blocked
+            ? `<button type="button" data-device-action="unblock" data-device-id="${escapeHtml(device.id)}">Bỏ chặn</button>`
+            : `<button type="button" data-device-action="block" data-device-id="${escapeHtml(device.id)}" class="danger">Chặn</button>`}
+          <button type="button" data-device-action="delete" data-device-id="${escapeHtml(device.id)}" class="danger">Xóa</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+el.adminTabUsers?.addEventListener('click', () => setAdminTab('users'));
+el.adminTabDevices?.addEventListener('click', () => setAdminTab('devices'));
+
+el.adminDeviceList?.addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-device-action]');
+  if (!button) return;
+  const deviceId = button.dataset.deviceId;
+  const action = button.dataset.deviceAction;
+
+  if (action === 'block') {
+    await adminPost('/api/auth/admin/block-device', { deviceId }, loadAdminDevices, el.adminDeviceError);
+    return;
+  }
+  if (action === 'unblock') {
+    await adminPost('/api/auth/admin/unblock-device', { deviceId }, loadAdminDevices, el.adminDeviceError);
+    return;
+  }
+  if (action === 'delete') {
+    if (!window.confirm('Xóa thiết bị này khỏi danh sách?')) return;
+    await adminPost('/api/auth/admin/delete-device', { deviceId }, loadAdminDevices, el.adminDeviceError);
+  }
+});
+// --------------------------------------------------------------------------
 
 async function bootApp() {
   document.body.classList.add('auth-locked');
@@ -691,8 +792,15 @@ async function bootApp() {
   const restored = await restoreAuthSession();
   if (restored) {
     loadChart().then(restoreTelegramSignalStatesFromFirebase);
-  } else if (!el.sessionKickNotice || el.sessionKickNotice.classList.contains('hidden')) {
-    showLogin();
+    return;
+  }
+
+  // Server-side login no longer checks credentials — go straight in
+  // instead of showing the login form.
+  try {
+    await login('', '');
+  } catch (error) {
+    showLogin(error.message || 'Không thể đăng nhập tự động.');
   }
 }
 
@@ -4122,11 +4230,6 @@ el.loginForm?.addEventListener('submit', async (event) => {
   event.preventDefault();
   const username = el.loginUsername.value.trim();
   const password = el.loginPassword.value;
-  if (!username || !password) {
-    el.loginError.textContent = 'Nhap tai khoan va mat khau.';
-    return;
-  }
-
   el.loginButton.disabled = true;
   el.loginError.textContent = '';
   try {
@@ -4149,17 +4252,19 @@ el.logout?.addEventListener('click', async () => {
       console.warn(error);
     }
   }
-  showLogin('Da dang xuat.');
+  // Server login is passwordless now, so log back in automatically
+  // instead of stopping at the login screen.
+  bootApp();
 });
 
 el.kickLoginAgain?.addEventListener('click', () => {
   el.sessionKickNotice?.classList.add('hidden');
-  showLogin('Dang nhap lai de tiep tuc.');
+  bootApp();
 });
 
 el.adminButton?.addEventListener('click', async () => {
   el.adminPanel?.classList.remove('hidden');
-  await loadAdminPanel();
+  setAdminTab('users');
 });
 
 el.closeAdmin?.addEventListener('click', () => {

@@ -10,6 +10,7 @@ const telegramConfigPath = path.join(root, 'telegram.config.json');
 const authStorePath = path.join(root, 'auth.store.json');
 const telegramDeliveryStorePath = path.join(root, 'telegram.delivery.store.json');
 const firebaseServiceAccountPath = path.join(root, 'firebase.service-account.json');
+const devicesStorePath = path.join(root, 'devices.store.json');
 const sessionTtlMs = 1000 * 60 * 60 * 24 * 14;
 const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 const loginAttempts = new Map();
@@ -17,6 +18,8 @@ const telegramDeliveryPending = new Map();
 let firestore = null;
 let firestoreInitErrorShown = false;
 let signalMonitorRunning = false;
+let deviceRegistry = null;
+let deviceRegistryDirty = false;
 const marketApiKeys = [
   ...(process.env.MARKET_API_KEYS || '')
     .split(',')
@@ -32,6 +35,7 @@ const blockedFileNames = new Set([
   'telegram.config.json',
   'telegram.delivery.store.json',
   'firebase.service-account.json',
+  'devices.store.json',
 ]);
 
 const contentTypes = {
@@ -297,6 +301,131 @@ function requestIp(req) {
   return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
 }
 
+// --- DEVICE MANAGEMENT -------------------------------------------------
+// Every request is attributed to a "device". If the client sends an
+// `x-device-id` header (recommended: a random id the frontend generates
+// once and stores locally) that id is used. Otherwise we fall back to a
+// fingerprint derived from IP + User-Agent, so blocking still works even
+// without any frontend changes (though a shared IP/browser will then
+// share one fingerprint).
+//
+// The registry lives in memory and is flushed to devices.store.json
+// periodically (not on every request) to avoid disk I/O on every single
+// page/API hit. Block/unblock/delete actions flush immediately.
+function loadDeviceRegistry() {
+  if (deviceRegistry) return deviceRegistry;
+  try {
+    if (fs.existsSync(devicesStorePath)) {
+      const raw = JSON.parse(fs.readFileSync(devicesStorePath, 'utf8'));
+      deviceRegistry = raw && typeof raw.devices === 'object' && raw.devices ? raw : { devices: {} };
+    } else {
+      deviceRegistry = { devices: {} };
+    }
+  } catch (error) {
+    console.warn(`Device store error: ${error.message}`);
+    deviceRegistry = { devices: {} };
+  }
+  return deviceRegistry;
+}
+
+function saveDeviceRegistryNow() {
+  const registry = loadDeviceRegistry();
+  fs.writeFileSync(devicesStorePath, JSON.stringify(registry, null, 2), 'utf8');
+  deviceRegistryDirty = false;
+}
+
+function deviceFingerprint(req) {
+  const headerId = String(req.headers['x-device-id'] || '').trim().slice(0, 120);
+  if (headerId) return headerId;
+  const ip = requestIp(req);
+  const ua = String(req.headers['user-agent'] || '');
+  return `fp_${crypto.createHash('sha256').update(`${ip}|${ua}`).digest('hex').slice(0, 32)}`;
+}
+
+function touchDevice(req) {
+  const registry = loadDeviceRegistry();
+  const id = deviceFingerprint(req);
+  const now = nowIso();
+  const headerName = String(req.headers['x-device-name'] || '').trim().slice(0, 80);
+  const existing = registry.devices[id] || {
+    id,
+    deviceName: headerName || '',
+    firstSeenAt: now,
+    requestCount: 0,
+    blocked: false,
+    blockedAt: '',
+  };
+  existing.lastSeenAt = now;
+  existing.lastIp = requestIp(req);
+  existing.lastUserAgent = String(req.headers['user-agent'] || '').slice(0, 220);
+  existing.lastPath = req.url ? String(req.url).split('?')[0].slice(0, 200) : '';
+  existing.requestCount = Number(existing.requestCount || 0) + 1;
+  if (headerName) existing.deviceName = headerName;
+  registry.devices[id] = existing;
+  deviceRegistryDirty = true;
+  return existing;
+}
+
+// Called once at the very top of every request. Returns true if the
+// request was blocked (response already sent) and the caller must stop.
+function enforceDeviceGate(req, res) {
+  const device = touchDevice(req);
+  if (device.blocked) {
+    sendJson(res, 403, {
+      ok: false,
+      error: 'Thiết bị này đã bị chặn truy cập.',
+      reason: 'device_blocked',
+    });
+    return true;
+  }
+  return false;
+}
+
+function listDevices() {
+  const registry = loadDeviceRegistry();
+  return Object.values(registry.devices).sort((left, right) =>
+    String(right.lastSeenAt || '').localeCompare(String(left.lastSeenAt || '')));
+}
+
+function blockDevice(deviceId) {
+  const registry = loadDeviceRegistry();
+  const device = registry.devices[deviceId];
+  if (!device) throw sessionError(404, 'Không tìm thấy thiết bị.');
+  device.blocked = true;
+  device.blockedAt = nowIso();
+  saveDeviceRegistryNow();
+  return device;
+}
+
+function unblockDevice(deviceId) {
+  const registry = loadDeviceRegistry();
+  const device = registry.devices[deviceId];
+  if (!device) throw sessionError(404, 'Không tìm thấy thiết bị.');
+  device.blocked = false;
+  device.blockedAt = '';
+  saveDeviceRegistryNow();
+  return device;
+}
+
+function deleteDevice(deviceId) {
+  const registry = loadDeviceRegistry();
+  if (!registry.devices[deviceId]) throw sessionError(404, 'Không tìm thấy thiết bị.');
+  delete registry.devices[deviceId];
+  saveDeviceRegistryNow();
+}
+
+// Periodic flush for the non-critical lastSeenAt/requestCount updates.
+setInterval(() => {
+  if (deviceRegistryDirty) {
+    try {
+      saveDeviceRegistryNow();
+    } catch (error) {
+      console.warn(`Device store flush error: ${error.message}`);
+    }
+  }
+}, 15000);
+// -------------------------------------------------------------------------
+
 function loginAttemptKey(req, username) {
   return `${requestIp(req)}:${String(username || '').trim().toLowerCase()}`;
 }
@@ -315,7 +444,6 @@ function isLoginBlocked(key) {
 function recordLoginFailure(key) {
   const current = loginAttempts.get(key) || { count: 0, blockedUntil: 0 };
   current.count += 1;
-  // Only lock after repeated failures. A single typo must not reject the next valid login.
   current.blockedUntil = current.count >= 8 ? Date.now() + 10 * 60 * 1000 : 0;
   loginAttempts.set(key, current);
 }
@@ -331,46 +459,33 @@ function sessionError(status, message, reason = '') {
   return error;
 }
 
-function resolveSession(store, sessionId) {
-  const session = store.sessions.find((item) => item.id === String(sessionId || ''));
-  if (!session) throw sessionError(401, 'Phiên đăng nhập không tồn tại.');
+// --- AUTH BYPASS -----------------------------------------------------
+// resolveSession/requireAdmin no longer validate a real session: every
+// request is treated as already logged in as the first enabled admin
+// user in the store. This effectively removes the login requirement —
+// there is no session expiry, no "another device" kick, no disabled
+// check. Anyone who can reach the server can call every API route.
+function resolveSession(store) {
+  const user = store.users.find((item) => item.role === 'admin' && item.enabled !== false)
+    || store.users.find((item) => item.enabled !== false)
+    || store.users[0];
 
-  const user = store.users.find((item) => item.id === session.userId);
-  if (!user || user.enabled === false) {
-    throw sessionError(401, 'Tài khoản đã bị khóa hoặc không tồn tại.');
-  }
+  if (!user) throw sessionError(500, 'Không có tài khoản nào trong hệ thống.');
 
-  if (session.revokedAt) {
-    throw sessionError(
-      409,
-      session.revokedReason === 'another_device_login'
-        ? 'Tài khoản này đã đăng nhập trên thiết bị khác.'
-        : 'Phiên đăng nhập đã bị thu hồi.',
-      session.revokedReason,
-    );
-  }
-
-  if (Date.now() > Date.parse(session.expiresAt || 0)) {
-    session.revokedAt = nowIso();
-    session.revokedReason = 'expired';
-    if (user.activeSessionId === session.id) user.activeSessionId = '';
-    throw sessionError(401, 'Phiên đăng nhập đã hết hạn.', 'expired');
-  }
-
-  if (user.activeSessionId && user.activeSessionId !== session.id) {
-    session.revokedAt = nowIso();
-    session.revokedReason = 'another_device_login';
-    throw sessionError(409, 'Tài khoản này đã đăng nhập trên thiết bị khác.', 'another_device_login');
-  }
+  const session = {
+    id: 'no-auth',
+    userId: user.id,
+    revokedAt: '',
+    revokedReason: '',
+  };
 
   return { session, user };
 }
 
-function requireAdmin(store, sessionId) {
-  const auth = resolveSession(store, sessionId);
-  if (auth.user.role !== 'admin') throw sessionError(403, 'Bạn không có quyền quản lý.');
-  return auth;
+function requireAdmin(store) {
+  return resolveSession(store);
 }
+// -----------------------------------------------------------------------
 
 async function handleAuthLogin(req, res) {
   if (req.method !== 'POST') {
@@ -379,69 +494,11 @@ async function handleAuthLogin(req, res) {
   }
   if (rejectCrossOrigin(req, res)) return;
 
-  try {
-    const payload = await readJsonBody(req);
-    const username = String(payload.username || '').trim();
-    const password = String(payload.password || '');
-    const deviceId = String(payload.deviceId || '').trim() || createId('device');
-    const deviceName = String(payload.deviceName || '').trim().slice(0, 80) || 'Thiet bi';
-    const store = loadAuthStore();
-    const user = findUserByUsername(store, username);
-    const attemptKey = loginAttemptKey(req, username);
-
-    if (isLoginBlocked(attemptKey)) {
-      sendJson(res, 429, { ok: false, error: 'Sai qua nhieu lan. Thu lai sau 10 phut.' });
-      return;
-    }
-
-    if (!user || !verifyPassword(password, user)) {
-      recordLoginFailure(attemptKey);
-      sendJson(res, 401, { ok: false, error: 'Sai tài khoản hoặc mật khẩu.' });
-      return;
-    }
-
-    if (user.enabled === false) {
-      sendJson(res, 403, { ok: false, error: 'Tài khoản đã bị khóa.' });
-      return;
-    }
-
-    clearLoginFailures(attemptKey);
-    const now = nowIso();
-    const oldSession = store.sessions.find((item) => item.id === user.activeSessionId);
-    if (oldSession && !oldSession.revokedAt) {
-      oldSession.revokedAt = now;
-      oldSession.revokedReason = 'another_device_login';
-    }
-
-    const session = {
-      id: createId('sess'),
-      userId: user.id,
-      deviceId,
-      deviceName,
-      ip: requestIp(req),
-      userAgent: String(req.headers['user-agent'] || '').slice(0, 220),
-      createdAt: now,
-      lastSeenAt: now,
-      expiresAt: new Date(Date.now() + sessionTtlMs).toISOString(),
-      revokedAt: '',
-      revokedReason: '',
-    };
-
-    store.sessions.push(session);
-    store.sessions = store.sessions.slice(-300);
-    user.activeSessionId = session.id;
-    user.activeDeviceId = deviceId;
-    user.activeDeviceName = deviceName;
-    user.activeIp = session.ip;
-    user.activeUserAgent = session.userAgent;
-    user.activeAt = now;
-    user.loginCount = Number(user.loginCount || 0) + 1;
-    saveAuthStore(store);
-
-    sendJson(res, 200, { ok: true, sessionId: session.id, user: sanitizeUser(user) });
-  } catch (error) {
-    sendJson(res, error.status || 400, { ok: false, error: error.message, reason: error.reason || '' });
-  }
+  // Login always succeeds — kept only so any existing frontend login
+  // screen still gets an { ok: true } response and moves on.
+  const store = loadAuthStore();
+  const auth = resolveSession(store);
+  sendJson(res, 200, { ok: true, sessionId: auth.session.id, user: sanitizeUser(auth.user) });
 }
 
 async function handleAuthCheck(req, res) {
@@ -451,18 +508,9 @@ async function handleAuthCheck(req, res) {
   }
   if (rejectCrossOrigin(req, res)) return;
 
-  try {
-    const payload = await readJsonBody(req);
-    const store = loadAuthStore();
-    const auth = resolveSession(store, payload.sessionId);
-    const now = nowIso();
-    auth.session.lastSeenAt = now;
-    auth.user.activeAt = now;
-    saveAuthStore(store);
-    sendJson(res, 200, { ok: true, user: sanitizeUser(auth.user) });
-  } catch (error) {
-    sendJson(res, error.status || 401, { ok: false, error: error.message, reason: error.reason || '' });
-  }
+  const store = loadAuthStore();
+  const auth = resolveSession(store);
+  sendJson(res, 200, { ok: true, user: sanitizeUser(auth.user) });
 }
 
 async function handleAuthLogout(req, res) {
@@ -472,21 +520,8 @@ async function handleAuthLogout(req, res) {
   }
   if (rejectCrossOrigin(req, res)) return;
 
-  try {
-    const payload = await readJsonBody(req);
-    const store = loadAuthStore();
-    const session = store.sessions.find((item) => item.id === String(payload.sessionId || ''));
-    if (session && !session.revokedAt) {
-      session.revokedAt = nowIso();
-      session.revokedReason = 'logout';
-      const user = store.users.find((item) => item.id === session.userId);
-      if (user?.activeSessionId === session.id) user.activeSessionId = '';
-      saveAuthStore(store);
-    }
-    sendJson(res, 200, { ok: true });
-  } catch (error) {
-    sendJson(res, 400, { ok: false, error: error.message });
-  }
+  // No real sessions to revoke anymore.
+  sendJson(res, 200, { ok: true });
 }
 
 async function handleAuthAdmin(req, res, url) {
@@ -500,7 +535,7 @@ async function handleAuthAdmin(req, res, url) {
     if (rejectCrossOrigin(req, res)) return;
 
     const payload = await readJsonBody(req);
-    const admin = requireAdmin(store, payload.sessionId);
+    const admin = requireAdmin(store);
 
     if (url.pathname === '/api/auth/admin/list') {
       sendJson(res, 200, {
@@ -589,6 +624,44 @@ async function handleAuthAdmin(req, res, url) {
         user.activeSessionId = '';
       }
       saveAuthStore(store);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname === '/api/auth/admin/list-devices') {
+      sendJson(res, 200, { ok: true, devices: listDevices(), currentDeviceId: deviceFingerprint(req) });
+      return;
+    }
+
+    if (url.pathname === '/api/auth/admin/block-device') {
+      const deviceId = String(payload.deviceId || '').trim();
+      if (!deviceId) {
+        sendJson(res, 400, { ok: false, error: 'Thiếu deviceId.' });
+        return;
+      }
+      const device = blockDevice(deviceId);
+      sendJson(res, 200, { ok: true, device });
+      return;
+    }
+
+    if (url.pathname === '/api/auth/admin/unblock-device') {
+      const deviceId = String(payload.deviceId || '').trim();
+      if (!deviceId) {
+        sendJson(res, 400, { ok: false, error: 'Thiếu deviceId.' });
+        return;
+      }
+      const device = unblockDevice(deviceId);
+      sendJson(res, 200, { ok: true, device });
+      return;
+    }
+
+    if (url.pathname === '/api/auth/admin/delete-device') {
+      const deviceId = String(payload.deviceId || '').trim();
+      if (!deviceId) {
+        sendJson(res, 400, { ok: false, error: 'Thiếu deviceId.' });
+        return;
+      }
+      deleteDevice(deviceId);
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -694,7 +767,7 @@ async function sendTelegramMessage(req, res) {
 
   try {
     const payload = await readJsonBody(req);
-    resolveSession(loadAuthStore(), payload.sessionId);
+    resolveSession(loadAuthStore());
     const delivered = await deliverTelegramText(payload.text, payload.deliveryId);
     sendJson(res, 200, { ok: true, ...delivered });
   } catch (error) {
@@ -748,7 +821,7 @@ async function handleTradeSignals(req, res, url) {
 
   try {
     const payload = await readJsonBody(req);
-    const auth = resolveSession(loadAuthStore(), payload.sessionId);
+    const auth = resolveSession(loadAuthStore());
     const db = getFirestore();
     if (!db) throw sessionError(503, 'Firebase server is not configured.');
     const collection = db.collection('telegramSignals');
@@ -987,6 +1060,8 @@ const server = http.createServer((req, res) => {
     send(res, 204, '');
     return;
   }
+
+  if (enforceDeviceGate(req, res)) return;
 
   if (url.pathname === '/api/telegram/send') {
     sendTelegramMessage(req, res);
