@@ -1,6 +1,8 @@
 auth.store.json
 telegram.config.json
 telegram.delivery.store.json
+telegram.signals.store.json
+devices.store.json
 .env
 .env.*
 *.log

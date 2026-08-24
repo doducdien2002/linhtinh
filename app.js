@@ -211,7 +211,7 @@ async function syncTelegramSignalStatesToFirebase(signals = telegramSignalStates
   } catch (error) {
     console.warn('Firebase server sync failed:', error);
     if (!firebaseSignalSyncErrorShown) {
-      el.status.textContent = 'Firebase server chưa ghi được kèo; vẫn lưu cục bộ.';
+      el.status.textContent = 'Server chưa ghi được kèo; vẫn lưu cục bộ.';
       firebaseSignalSyncErrorShown = true;
     }
   }
@@ -748,6 +748,10 @@ function renderAdminDevices(devices, currentDeviceId) {
       <div class="admin-device-row ${device.blocked ? 'blocked' : ''}">
         <div class="admin-device-info">
           <strong>${escapeHtml(name)}${isCurrent ? ' (thiết bị này)' : ''}</strong>
+          <div class="admin-device-note">
+            <input type="text" value="${escapeHtml(device.note || '')}" maxlength="240" placeholder="Ghi chú: máy nhà, VPS, điện thoại..." data-device-note />
+            <button type="button" data-device-action="note" data-device-id="${escapeHtml(device.id)}">Lưu</button>
+          </div>
           <small>${escapeHtml(device.lastIp || '--')} · ${escapeHtml(device.lastUserAgent || '--')}</small>
           <small>Lần cuối: ${formatAuthTime(device.lastSeenAt)} · ${Number(device.requestCount || 0)} request</small>
         </div>
@@ -782,6 +786,12 @@ el.adminDeviceList?.addEventListener('click', async (event) => {
   if (action === 'delete') {
     if (!window.confirm('Xóa thiết bị này khỏi danh sách?')) return;
     await adminPost('/api/auth/admin/delete-device', { deviceId }, loadAdminDevices, el.adminDeviceError);
+    return;
+  }
+  if (action === 'note') {
+    const row = button.closest('.admin-device-row');
+    const note = row?.querySelector('[data-device-note]')?.value || '';
+    await adminPost('/api/auth/admin/set-device-note', { deviceId, note }, loadAdminDevices, el.adminDeviceError);
   }
 });
 // --------------------------------------------------------------------------
@@ -795,13 +805,7 @@ async function bootApp() {
     return;
   }
 
-  // Server-side login no longer checks credentials — go straight in
-  // instead of showing the login form.
-  try {
-    await login('', '');
-  } catch (error) {
-    showLogin(error.message || 'Không thể đăng nhập tự động.');
-  }
+  showLogin();
 }
 
 function isTwelveDataLimitError(error) {
@@ -3261,6 +3265,7 @@ async function activateTelegramSignal(signal, levels) {
     nextSignalState,
   ];
   saveTelegramSignalStates();
+  await syncTelegramSignalStatesToFirebase(telegramSignalStates);
   checkTelegramSignalPrice(levels.price);
 }
 
@@ -3779,46 +3784,47 @@ function fallbackToYahoo(sourceName, symbol, interval, limit, reason = '') {
 
 function startTwelveDataStream(symbol, interval, limit, token) {
   closeLiveSocket();
-  const tdSymbol = toTwelveDataSymbol(symbol);
-  liveSocket = new WebSocket(`wss://ws.twelvedata.com/v1/quotes/price?apikey=${encodeURIComponent(token)}`);
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const params = new URLSearchParams({
+    symbol,
+    deviceId: getDeviceId(),
+    deviceName: getDeviceName(),
+  });
+  if (token) params.set('apikey', token);
+  liveSocket = new WebSocket(`${protocol}//${window.location.host}/api/ws/price?${params}`);
 
   liveSocket.onopen = () => {
-    liveSocket.send(JSON.stringify({
-      action: 'subscribe',
-      params: { symbols: tdSymbol },
-    }));
     socketHeartbeatTimer = window.setInterval(() => {
       if (liveSocket?.readyState === WebSocket.OPEN) {
-        liveSocket.send(JSON.stringify({ action: 'heartbeat' }));
+        liveSocket.send('ping');
       }
-    }, 10_000);
-    el.status.textContent = `${symbol} ${interval} TWELVEDATA TICK`;
+    }, 15000);
+    el.status.textContent = `${symbol} ${interval} PROXY TICK 1S`;
   };
 
   liveSocket.onmessage = (event) => {
     const message = JSON.parse(event.data);
-    if (message.status === 'error' || message.event === 'error' || message.code === 429) {
-      fallbackToYahoo('TwelveData', symbol, interval, limit, message.message || message.code || 'stream error');
+    if (message.type === 'ready') {
+      el.status.textContent = `${symbol} proxy realtime 1s da ket noi`;
       return;
     }
-
-    if (message.event === 'subscribe-status' && message.status && message.status !== 'ok') {
-      fallbackToYahoo('TwelveData', symbol, interval, limit, message.message || message.status);
+    if (message.type === 'error') {
+      el.status.textContent = `${symbol} proxy loi: ${message.error || 'stream error'}`;
       return;
     }
 
     const price = Number(message.price ?? message.p ?? message.value);
     if (!Number.isFinite(price)) return;
 
-    const timestampMs = Number(message.timestamp ? message.timestamp * 1000 : Date.now());
+    const timestampMs = Number(message.timestamp || Date.now());
     const candle = updateCurrentPrice(price, interval, limit, Math.floor(timestampMs / 1000));
     if (candle) renderLiveCandle(candle, price);
-    maybeRefreshComputed(1800);
-    el.status.textContent = `${symbol} TWELVEDATA ${formatPrice(price)}`;
+    maybeRefreshComputed(1000);
+    el.status.textContent = `${symbol} PROXY 1S ${formatPrice(price)} ${new Date(timestampMs).toLocaleTimeString()}`;
   };
 
   liveSocket.onerror = () => {
-    fallbackToYahoo('TwelveData', symbol, interval, limit, 'socket loi');
+    fallbackToYahoo('Proxy', symbol, interval, limit, 'websocket loi');
   };
 
   liveSocket.onclose = () => {
@@ -3872,7 +3878,7 @@ function startLiveStream(source, symbol, interval, limit, token) {
     return;
   }
 
-  if (source === 'twelvedata' && token) {
+  if (source === 'twelvedata') {
     startTwelveDataStream(symbol, interval, limit, token);
     return;
   }
@@ -4252,9 +4258,7 @@ el.logout?.addEventListener('click', async () => {
       console.warn(error);
     }
   }
-  // Server login is passwordless now, so log back in automatically
-  // instead of stopping at the login screen.
-  bootApp();
+  showLogin();
 });
 
 el.kickLoginAgain?.addEventListener('click', () => {

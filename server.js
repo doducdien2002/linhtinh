@@ -8,9 +8,7 @@ const port = Number(process.env.PORT || 8097);
 const host = process.env.HOST || '0.0.0.0';
 const telegramConfigPath = path.join(root, 'telegram.config.json');
 const authStorePath = path.join(root, 'auth.store.json');
-const telegramDeliveryStorePath = path.join(root, 'telegram.delivery.store.json');
 const firebaseServiceAccountPath = path.join(root, 'firebase.service-account.json');
-const devicesStorePath = path.join(root, 'devices.store.json');
 const sessionTtlMs = 1000 * 60 * 60 * 24 * 14;
 const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 const loginAttempts = new Map();
@@ -18,8 +16,19 @@ const telegramDeliveryPending = new Map();
 let firestore = null;
 let firestoreInitErrorShown = false;
 let signalMonitorRunning = false;
-let deviceRegistry = null;
-let deviceRegistryDirty = false;
+let authStoreCache = null;
+let authStoreCacheAt = 0;
+const deviceCache = new Map();
+const priceCache = new Map();
+const priceStreams = new Map();
+const runtimeCollectionName = process.env.FIRESTORE_RUNTIME_COLLECTION || 'craziiRuntime';
+const authStoreDocName = process.env.FIRESTORE_AUTH_DOC || 'authStore';
+const devicesCollectionName = process.env.FIRESTORE_DEVICES_COLLECTION || 'craziiDevices';
+const telegramDeliveriesCollectionName = process.env.FIRESTORE_DELIVERIES_COLLECTION || 'telegramDeliveries';
+const telegramSignalsCollectionName = process.env.FIRESTORE_SIGNALS_COLLECTION || 'telegramSignals';
+const authCacheTtlMs = Number(process.env.AUTH_CACHE_TTL_MS || 5000);
+const deviceWriteIntervalMs = Number(process.env.DEVICE_WRITE_INTERVAL_MS || 300000);
+const priceCacheTtlMs = Number(process.env.PRICE_CACHE_TTL_MS || 900);
 const marketApiKeys = [
   ...(process.env.MARKET_API_KEYS || '')
     .split(',')
@@ -34,6 +43,7 @@ const blockedFileNames = new Set([
   'auth.store.json',
   'telegram.config.json',
   'telegram.delivery.store.json',
+  'telegram.signals.store.json',
   'firebase.service-account.json',
   'devices.store.json',
 ]);
@@ -46,7 +56,7 @@ const contentTypes = {
 };
 
 function securityHeaders(type) {
-  return {
+  const headers = {
     'Content-Type': type,
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
@@ -64,6 +74,8 @@ function securityHeaders(type) {
       "form-action 'self'",
     ].join('; '),
   };
+  if (isProduction) headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains';
+  return headers;
 }
 
 function send(res, status, body, type = 'text/plain; charset=utf-8') {
@@ -83,35 +95,22 @@ function readTelegramConfig() {
   }
 }
 
-function loadTelegramDeliveryStore() {
-  try {
-    if (!fs.existsSync(telegramDeliveryStorePath)) return { deliveries: {} };
-    const store = JSON.parse(fs.readFileSync(telegramDeliveryStorePath, 'utf8'));
-    return store && typeof store.deliveries === 'object' && store.deliveries
-      ? store
-      : { deliveries: {} };
-  } catch (error) {
-    console.warn(`Telegram delivery store error: ${error.message}`);
-    return { deliveries: {} };
-  }
-}
-
-function saveTelegramDeliveryStore(store) {
-  const entries = Object.entries(store.deliveries || {})
-    .sort(([, left], [, right]) => String(left.sentAt).localeCompare(String(right.sentAt)))
-    .slice(-1000);
-  store.deliveries = Object.fromEntries(entries);
-  fs.writeFileSync(telegramDeliveryStorePath, JSON.stringify(store, null, 2), 'utf8');
-}
-
 function getFirestore() {
   if (firestore) return firestore;
-  if (!fs.existsSync(firebaseServiceAccountPath)) return null;
 
   try {
     const admin = require('firebase-admin');
     if (!admin.apps.length) {
-      const serviceAccount = JSON.parse(fs.readFileSync(firebaseServiceAccountPath, 'utf8'));
+      let serviceAccount = null;
+      if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+      } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
+        serviceAccount = JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf8'));
+      } else if (fs.existsSync(firebaseServiceAccountPath)) {
+        serviceAccount = JSON.parse(fs.readFileSync(firebaseServiceAccountPath, 'utf8'));
+      }
+
+      if (!serviceAccount) return null;
       admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     }
     firestore = admin.firestore();
@@ -123,6 +122,16 @@ function getFirestore() {
     }
     return null;
   }
+}
+
+function requireFirestore() {
+  const db = getFirestore();
+  if (!db) throw sessionError(503, 'Firebase server is not configured.');
+  return db;
+}
+
+function runtimeDoc(name) {
+  return requireFirestore().collection(runtimeCollectionName).doc(name);
 }
 
 function readJsonBody(req, maxBytes = 20000) {
@@ -225,29 +234,50 @@ function defaultAuthStore() {
   };
 }
 
-function loadAuthStore() {
-  try {
-    if (!fs.existsSync(authStorePath)) {
-      const store = defaultAuthStore();
-      saveAuthStore(store);
-      return store;
-    }
+function normalizeAuthStore(store) {
+  const normalized = store && typeof store === 'object' ? store : {};
+  normalized.version = normalized.version || 1;
+  normalized.createdAt = normalized.createdAt || nowIso();
+  normalized.updatedAt = normalized.updatedAt || normalized.createdAt;
+  normalized.users = Array.isArray(normalized.users) ? normalized.users : [];
+  normalized.sessions = Array.isArray(normalized.sessions) ? normalized.sessions : [];
+  return normalized;
+}
 
+function loadLegacyAuthStore() {
+  try {
+    if (!fs.existsSync(authStorePath)) return null;
     const store = JSON.parse(fs.readFileSync(authStorePath, 'utf8'));
-    store.users = Array.isArray(store.users) ? store.users : [];
-    store.sessions = Array.isArray(store.sessions) ? store.sessions : [];
-    return store;
+    return normalizeAuthStore(store);
   } catch (error) {
-    console.warn(`Auth store error: ${error.message}`);
-    const store = defaultAuthStore();
-    saveAuthStore(store);
-    return store;
+    console.warn(`Legacy auth store migration skipped: ${error.message}`);
+    return null;
   }
 }
 
-function saveAuthStore(store) {
+async function loadAuthStore() {
+  if (authStoreCache && Date.now() - authStoreCacheAt < authCacheTtlMs) {
+    return authStoreCache;
+  }
+
+  const ref = runtimeDoc(authStoreDocName);
+  const snapshot = await ref.get();
+  if (snapshot.exists) {
+    authStoreCache = normalizeAuthStore(snapshot.data());
+    authStoreCacheAt = Date.now();
+    return authStoreCache;
+  }
+
+  const store = loadLegacyAuthStore() || defaultAuthStore();
+  await saveAuthStore(store);
+  return store;
+}
+
+async function saveAuthStore(store) {
   store.updatedAt = nowIso();
-  fs.writeFileSync(authStorePath, JSON.stringify(store, null, 2), 'utf8');
+  authStoreCache = store;
+  authStoreCacheAt = Date.now();
+  await runtimeDoc(authStoreDocName).set(store, { merge: false });
 }
 
 function sanitizeUser(user, includeAdminFields = false) {
@@ -301,6 +331,15 @@ function requestIp(req) {
   return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
 }
 
+function requestQueryValue(req, key) {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
+    return url.searchParams.get(key) || '';
+  } catch (error) {
+    return '';
+  }
+}
+
 // --- DEVICE MANAGEMENT -------------------------------------------------
 // Every request is attributed to a "device". If the client sends an
 // `x-device-id` header (recommended: a random id the frontend generates
@@ -309,67 +348,80 @@ function requestIp(req) {
 // without any frontend changes (though a shared IP/browser will then
 // share one fingerprint).
 //
-// The registry lives in memory and is flushed to devices.store.json
-// periodically (not on every request) to avoid disk I/O on every single
-// page/API hit. Block/unblock/delete actions flush immediately.
-function loadDeviceRegistry() {
-  if (deviceRegistry) return deviceRegistry;
-  try {
-    if (fs.existsSync(devicesStorePath)) {
-      const raw = JSON.parse(fs.readFileSync(devicesStorePath, 'utf8'));
-      deviceRegistry = raw && typeof raw.devices === 'object' && raw.devices ? raw : { devices: {} };
-    } else {
-      deviceRegistry = { devices: {} };
-    }
-  } catch (error) {
-    console.warn(`Device store error: ${error.message}`);
-    deviceRegistry = { devices: {} };
-  }
-  return deviceRegistry;
-}
-
-function saveDeviceRegistryNow() {
-  const registry = loadDeviceRegistry();
-  fs.writeFileSync(devicesStorePath, JSON.stringify(registry, null, 2), 'utf8');
-  deviceRegistryDirty = false;
+// Device state is stored in Firestore so Render remains authoritative even
+// when the browser/computer that opened the chart is offline.
+function normalizeDeviceId(value) {
+  const id = String(value || '').trim().slice(0, 120);
+  return id.replace(/[\/\\#?\[\]]/g, '_');
 }
 
 function deviceFingerprint(req) {
-  const headerId = String(req.headers['x-device-id'] || '').trim().slice(0, 120);
+  const headerId = normalizeDeviceId(req.headers['x-device-id'] || requestQueryValue(req, 'deviceId'));
   if (headerId) return headerId;
   const ip = requestIp(req);
   const ua = String(req.headers['user-agent'] || '');
   return `fp_${crypto.createHash('sha256').update(`${ip}|${ua}`).digest('hex').slice(0, 32)}`;
 }
 
-function touchDevice(req) {
-  const registry = loadDeviceRegistry();
+function deviceDoc(deviceId) {
+  return requireFirestore().collection(devicesCollectionName).doc(normalizeDeviceId(deviceId));
+}
+
+async function touchDevice(req) {
   const id = deviceFingerprint(req);
   const now = nowIso();
-  const headerName = String(req.headers['x-device-name'] || '').trim().slice(0, 80);
-  const existing = registry.devices[id] || {
+  const headerName = String(req.headers['x-device-name'] || requestQueryValue(req, 'deviceName') || '').trim().slice(0, 80);
+  const cached = deviceCache.get(id);
+  if (cached) {
+    const cachedDevice = cached.device;
+    cachedDevice.lastSeenAt = now;
+    cachedDevice.lastIp = requestIp(req);
+    cachedDevice.lastUserAgent = String(req.headers['user-agent'] || '').slice(0, 220);
+    cachedDevice.lastPath = req.url ? String(req.url).split('?')[0].slice(0, 200) : '';
+    cachedDevice.requestCount = Number(cachedDevice.requestCount || 0) + 1;
+    if (headerName) cachedDevice.deviceName = headerName;
+    if (Date.now() - cached.wroteAt >= deviceWriteIntervalMs) {
+      await deviceDoc(id).set(cachedDevice, { merge: true });
+      cached.wroteAt = Date.now();
+    }
+    return cachedDevice;
+  }
+
+  const ref = deviceDoc(id);
+  const snapshot = await ref.get();
+  const existing = snapshot.exists ? snapshot.data() : {
     id,
     deviceName: headerName || '',
     firstSeenAt: now,
     requestCount: 0,
     blocked: false,
     blockedAt: '',
+    note: '',
   };
-  existing.lastSeenAt = now;
-  existing.lastIp = requestIp(req);
-  existing.lastUserAgent = String(req.headers['user-agent'] || '').slice(0, 220);
-  existing.lastPath = req.url ? String(req.url).split('?')[0].slice(0, 200) : '';
-  existing.requestCount = Number(existing.requestCount || 0) + 1;
-  if (headerName) existing.deviceName = headerName;
-  registry.devices[id] = existing;
-  deviceRegistryDirty = true;
-  return existing;
+  const updates = {
+    ...existing,
+    id,
+    lastSeenAt: now,
+    lastIp: requestIp(req),
+    lastUserAgent: String(req.headers['user-agent'] || '').slice(0, 220),
+    lastPath: req.url ? String(req.url).split('?')[0].slice(0, 200) : '',
+    requestCount: Number(existing.requestCount || 0) + 1,
+    deviceName: headerName || existing.deviceName || '',
+    blocked: existing.blocked === true,
+    blockedAt: existing.blockedAt || '',
+    note: String(existing.note || '').slice(0, 240),
+  };
+  if (!snapshot.exists || Date.now() - new Date(existing.lastSeenAt || 0).getTime() >= deviceWriteIntervalMs) {
+    await ref.set(updates, { merge: true });
+  }
+  deviceCache.set(id, { device: updates, wroteAt: Date.now() });
+  return updates;
 }
 
 // Called once at the very top of every request. Returns true if the
 // request was blocked (response already sent) and the caller must stop.
-function enforceDeviceGate(req, res) {
-  const device = touchDevice(req);
+async function enforceDeviceGate(req, res) {
+  const device = await touchDevice(req);
   if (device.blocked) {
     sendJson(res, 403, {
       ok: false,
@@ -381,49 +433,49 @@ function enforceDeviceGate(req, res) {
   return false;
 }
 
-function listDevices() {
-  const registry = loadDeviceRegistry();
-  return Object.values(registry.devices).sort((left, right) =>
-    String(right.lastSeenAt || '').localeCompare(String(left.lastSeenAt || '')));
+async function listDevices() {
+  const snapshot = await requireFirestore().collection(devicesCollectionName).get();
+  return snapshot.docs
+    .map((document) => ({ id: document.id, ...document.data() }))
+    .sort((left, right) => String(right.lastSeenAt || '').localeCompare(String(left.lastSeenAt || '')));
 }
 
-function blockDevice(deviceId) {
-  const registry = loadDeviceRegistry();
-  const device = registry.devices[deviceId];
-  if (!device) throw sessionError(404, 'Không tìm thấy thiết bị.');
-  device.blocked = true;
-  device.blockedAt = nowIso();
-  saveDeviceRegistryNow();
+async function getDeviceOrThrow(deviceId) {
+  const ref = deviceDoc(deviceId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) throw sessionError(404, 'Không tìm thấy thiết bị.');
+  return { ref, device: { id: snapshot.id, ...snapshot.data() } };
+}
+
+async function blockDevice(deviceId) {
+  const { ref, device } = await getDeviceOrThrow(deviceId);
+  Object.assign(device, { blocked: true, blockedAt: nowIso() });
+  await ref.set(device, { merge: true });
+  deviceCache.set(device.id, { device, wroteAt: Date.now() });
   return device;
 }
 
-function unblockDevice(deviceId) {
-  const registry = loadDeviceRegistry();
-  const device = registry.devices[deviceId];
-  if (!device) throw sessionError(404, 'Không tìm thấy thiết bị.');
-  device.blocked = false;
-  device.blockedAt = '';
-  saveDeviceRegistryNow();
+async function unblockDevice(deviceId) {
+  const { ref, device } = await getDeviceOrThrow(deviceId);
+  Object.assign(device, { blocked: false, blockedAt: '' });
+  await ref.set(device, { merge: true });
+  deviceCache.set(device.id, { device, wroteAt: Date.now() });
   return device;
 }
 
-function deleteDevice(deviceId) {
-  const registry = loadDeviceRegistry();
-  if (!registry.devices[deviceId]) throw sessionError(404, 'Không tìm thấy thiết bị.');
-  delete registry.devices[deviceId];
-  saveDeviceRegistryNow();
+async function deleteDevice(deviceId) {
+  const { ref } = await getDeviceOrThrow(deviceId);
+  await ref.delete();
+  deviceCache.delete(normalizeDeviceId(deviceId));
 }
 
-// Periodic flush for the non-critical lastSeenAt/requestCount updates.
-setInterval(() => {
-  if (deviceRegistryDirty) {
-    try {
-      saveDeviceRegistryNow();
-    } catch (error) {
-      console.warn(`Device store flush error: ${error.message}`);
-    }
-  }
-}, 15000);
+async function setDeviceNote(deviceId, note) {
+  const { ref, device } = await getDeviceOrThrow(deviceId);
+  device.note = String(note || '').trim().slice(0, 240);
+  await ref.set({ note: device.note }, { merge: true });
+  deviceCache.set(device.id, { device, wroteAt: Date.now() });
+  return device;
+}
 // -------------------------------------------------------------------------
 
 function loginAttemptKey(req, username) {
@@ -459,33 +511,69 @@ function sessionError(status, message, reason = '') {
   return error;
 }
 
-// --- AUTH BYPASS -----------------------------------------------------
-// resolveSession/requireAdmin no longer validate a real session: every
-// request is treated as already logged in as the first enabled admin
-// user in the store. This effectively removes the login requirement —
-// there is no session expiry, no "another device" kick, no disabled
-// check. Anyone who can reach the server can call every API route.
-function resolveSession(store) {
-  const user = store.users.find((item) => item.role === 'admin' && item.enabled !== false)
-    || store.users.find((item) => item.enabled !== false)
-    || store.users[0];
+function payloadDeviceId(payload, req) {
+  return String(payload?.deviceId || req.headers['x-device-id'] || requestQueryValue(req, 'deviceId') || deviceFingerprint(req) || '').trim();
+}
 
-  if (!user) throw sessionError(500, 'Không có tài khoản nào trong hệ thống.');
+function revokeSession(session, reason) {
+  if (!session || session.revokedAt) return;
+  session.revokedAt = nowIso();
+  session.revokedReason = reason;
+}
 
-  const session = {
-    id: 'no-auth',
-    userId: user.id,
-    revokedAt: '',
-    revokedReason: '',
-  };
+async function resolveSession(store, payload = {}, req = null) {
+  const sessionId = String(payload.sessionId || '').trim();
+  if (!sessionId) throw sessionError(401, 'Vui lòng đăng nhập lại.', 'missing_session');
 
+  const session = store.sessions.find((item) => item.id === sessionId);
+  if (!session || session.revokedAt) {
+    throw sessionError(401, 'Phiên đăng nhập không hợp lệ.', session?.revokedReason || 'invalid_session');
+  }
+
+  if (new Date(session.expiresAt).getTime() <= Date.now()) {
+    revokeSession(session, 'expired');
+    const expiredUser = store.users.find((item) => item.id === session.userId);
+    if (expiredUser?.activeSessionId === session.id) expiredUser.activeSessionId = '';
+    await saveAuthStore(store);
+    throw sessionError(401, 'Phiên đăng nhập đã hết hạn.', 'expired');
+  }
+
+  const user = store.users.find((item) => item.id === session.userId);
+  if (!user || user.enabled === false) {
+    revokeSession(session, 'disabled');
+    await saveAuthStore(store);
+    throw sessionError(403, 'Tài khoản đã bị khóa.', 'disabled');
+  }
+
+  const currentDeviceId = req ? payloadDeviceId(payload, req) : String(payload.deviceId || '');
+  if (session.deviceId && currentDeviceId && session.deviceId !== currentDeviceId) {
+    revokeSession(session, 'device_mismatch');
+    if (user.activeSessionId === session.id) user.activeSessionId = '';
+    await saveAuthStore(store);
+    throw sessionError(401, 'Thiết bị không khớp với phiên đăng nhập.', 'device_mismatch');
+  }
+
+  if (user.activeSessionId && user.activeSessionId !== session.id) {
+    revokeSession(session, 'another_device_login');
+    await saveAuthStore(store);
+    throw sessionError(409, 'Tài khoản này đang đăng nhập trên thiết bị khác.', 'another_device_login');
+  }
+
+  session.lastSeenAt = nowIso();
+  user.activeSessionId = session.id;
+  user.activeDeviceId = session.deviceId || currentDeviceId;
+  user.activeDeviceName = session.deviceName || String(req?.headers['x-device-name'] || '').slice(0, 80);
+  user.activeIp = req ? requestIp(req) : user.activeIp;
+  user.activeUserAgent = req ? String(req.headers['user-agent'] || '').slice(0, 220) : user.activeUserAgent;
+  user.activeAt = session.lastSeenAt;
   return { session, user };
 }
 
-function requireAdmin(store) {
-  return resolveSession(store);
+async function requireAdmin(store, payload = {}, req = null) {
+  const auth = await resolveSession(store, payload, req);
+  if (auth.user.role !== 'admin') throw sessionError(403, 'Chỉ admin mới được thao tác.');
+  return auth;
 }
-// -----------------------------------------------------------------------
 
 async function handleAuthLogin(req, res) {
   if (req.method !== 'POST') {
@@ -494,11 +582,56 @@ async function handleAuthLogin(req, res) {
   }
   if (rejectCrossOrigin(req, res)) return;
 
-  // Login always succeeds — kept only so any existing frontend login
-  // screen still gets an { ok: true } response and moves on.
-  const store = loadAuthStore();
-  const auth = resolveSession(store);
-  sendJson(res, 200, { ok: true, sessionId: auth.session.id, user: sanitizeUser(auth.user) });
+  try {
+    const payload = await readJsonBody(req);
+    const username = String(payload.username || '').trim();
+    const key = loginAttemptKey(req, username);
+    if (isLoginBlocked(key)) {
+      sendJson(res, 429, { ok: false, error: 'Đăng nhập sai quá nhiều lần, thử lại sau 10 phút.' });
+      return;
+    }
+
+    const store = await loadAuthStore();
+    const user = findUserByUsername(store, username);
+    if (!user || user.enabled === false || !verifyPassword(payload.password, user)) {
+      recordLoginFailure(key);
+      sendJson(res, 401, { ok: false, error: 'Sai tài khoản hoặc mật khẩu.' });
+      return;
+    }
+
+    clearLoginFailures(key);
+    const now = nowIso();
+    const oldActive = store.sessions.find((item) => item.id === user.activeSessionId);
+    revokeSession(oldActive, 'another_device_login');
+
+    const session = {
+      id: createId('sess'),
+      userId: user.id,
+      deviceId: payloadDeviceId(payload, req),
+      deviceName: String(payload.deviceName || req.headers['x-device-name'] || '').trim().slice(0, 80),
+      ip: requestIp(req),
+      userAgent: String(req.headers['user-agent'] || '').slice(0, 220),
+      createdAt: now,
+      lastSeenAt: now,
+      expiresAt: new Date(Date.now() + sessionTtlMs).toISOString(),
+      revokedAt: '',
+      revokedReason: '',
+    };
+
+    store.sessions.push(session);
+    store.sessions = store.sessions.slice(-300);
+    user.activeSessionId = session.id;
+    user.activeDeviceId = session.deviceId;
+    user.activeDeviceName = session.deviceName;
+    user.activeIp = session.ip;
+    user.activeUserAgent = session.userAgent;
+    user.activeAt = now;
+    user.loginCount = Number(user.loginCount || 0) + 1;
+    await saveAuthStore(store);
+    sendJson(res, 200, { ok: true, sessionId: session.id, user: sanitizeUser(user) });
+  } catch (error) {
+    sendJson(res, error.status || 400, { ok: false, error: error.message, reason: error.reason || '' });
+  }
 }
 
 async function handleAuthCheck(req, res) {
@@ -508,9 +641,14 @@ async function handleAuthCheck(req, res) {
   }
   if (rejectCrossOrigin(req, res)) return;
 
-  const store = loadAuthStore();
-  const auth = resolveSession(store);
-  sendJson(res, 200, { ok: true, user: sanitizeUser(auth.user) });
+  try {
+    const payload = await readJsonBody(req);
+    const store = await loadAuthStore();
+    const auth = await resolveSession(store, payload, req);
+    sendJson(res, 200, { ok: true, user: sanitizeUser(auth.user) });
+  } catch (error) {
+    sendJson(res, error.status || 401, { ok: false, error: error.message, reason: error.reason || '' });
+  }
 }
 
 async function handleAuthLogout(req, res) {
@@ -520,13 +658,22 @@ async function handleAuthLogout(req, res) {
   }
   if (rejectCrossOrigin(req, res)) return;
 
-  // No real sessions to revoke anymore.
+  try {
+    const payload = await readJsonBody(req);
+    const store = await loadAuthStore();
+    const auth = await resolveSession(store, payload, req);
+    revokeSession(auth.session, 'logout');
+    if (auth.user.activeSessionId === auth.session.id) auth.user.activeSessionId = '';
+    await saveAuthStore(store);
+  } catch (error) {
+    // Logout should be idempotent from the browser's point of view.
+  }
   sendJson(res, 200, { ok: true });
 }
 
 async function handleAuthAdmin(req, res, url) {
   try {
-    const store = loadAuthStore();
+    const store = await loadAuthStore();
 
     if (req.method !== 'POST') {
       sendJson(res, 405, { ok: false, error: 'Method not allowed' });
@@ -535,7 +682,7 @@ async function handleAuthAdmin(req, res, url) {
     if (rejectCrossOrigin(req, res)) return;
 
     const payload = await readJsonBody(req);
-    const admin = requireAdmin(store);
+    const admin = await requireAdmin(store, payload, req);
 
     if (url.pathname === '/api/auth/admin/list') {
       sendJson(res, 200, {
@@ -582,7 +729,7 @@ async function handleAuthAdmin(req, res, url) {
         createdAt,
         loginCount: 0,
       });
-      saveAuthStore(store);
+      await saveAuthStore(store);
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -599,7 +746,7 @@ async function handleAuthAdmin(req, res, url) {
         active.revokedReason = 'admin_kick';
       }
       user.activeSessionId = '';
-      saveAuthStore(store);
+      await saveAuthStore(store);
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -623,13 +770,13 @@ async function handleAuthAdmin(req, res, url) {
         }
         user.activeSessionId = '';
       }
-      saveAuthStore(store);
+      await saveAuthStore(store);
       sendJson(res, 200, { ok: true });
       return;
     }
 
     if (url.pathname === '/api/auth/admin/list-devices') {
-      sendJson(res, 200, { ok: true, devices: listDevices(), currentDeviceId: deviceFingerprint(req) });
+      sendJson(res, 200, { ok: true, devices: await listDevices(), currentDeviceId: deviceFingerprint(req) });
       return;
     }
 
@@ -639,7 +786,7 @@ async function handleAuthAdmin(req, res, url) {
         sendJson(res, 400, { ok: false, error: 'Thiếu deviceId.' });
         return;
       }
-      const device = blockDevice(deviceId);
+      const device = await blockDevice(deviceId);
       sendJson(res, 200, { ok: true, device });
       return;
     }
@@ -650,7 +797,7 @@ async function handleAuthAdmin(req, res, url) {
         sendJson(res, 400, { ok: false, error: 'Thiếu deviceId.' });
         return;
       }
-      const device = unblockDevice(deviceId);
+      const device = await unblockDevice(deviceId);
       sendJson(res, 200, { ok: true, device });
       return;
     }
@@ -661,8 +808,19 @@ async function handleAuthAdmin(req, res, url) {
         sendJson(res, 400, { ok: false, error: 'Thiếu deviceId.' });
         return;
       }
-      deleteDevice(deviceId);
+      await deleteDevice(deviceId);
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname === '/api/auth/admin/set-device-note') {
+      const deviceId = String(payload.deviceId || '').trim();
+      if (!deviceId) {
+        sendJson(res, 400, { ok: false, error: 'Thiếu deviceId.' });
+        return;
+      }
+      const device = await setDeviceNote(deviceId, payload.note);
+      sendJson(res, 200, { ok: true, device });
       return;
     }
 
@@ -680,7 +838,7 @@ async function handleAuthAdmin(req, res, url) {
       const hashed = hashPassword(password);
       user.passwordSalt = hashed.salt;
       user.passwordHash = hashed.hash;
-      saveAuthStore(store);
+      await saveAuthStore(store);
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -722,9 +880,14 @@ async function deliverTelegramText(text, deliveryId = '') {
   const normalizedText = String(text || '').trim();
   if (!normalizedText) throw new Error('Missing message text');
   const normalizedDeliveryId = String(deliveryId || '').trim().slice(0, 180);
-  const deliveryStore = normalizedDeliveryId ? loadTelegramDeliveryStore() : null;
-  if (normalizedDeliveryId && deliveryStore.deliveries[normalizedDeliveryId]) {
-    return { deduplicated: true, sentAt: deliveryStore.deliveries[normalizedDeliveryId].sentAt };
+  const deliveryRef = normalizedDeliveryId
+    ? requireFirestore().collection(telegramDeliveriesCollectionName).doc(deliveryDocumentId(normalizedDeliveryId))
+    : null;
+  if (deliveryRef) {
+    const snapshot = await deliveryRef.get();
+    if (snapshot.exists) {
+      return { deduplicated: true, sentAt: snapshot.data().sentAt };
+    }
   }
 
   const deliver = async () => {
@@ -748,9 +911,12 @@ async function deliverTelegramText(text, deliveryId = '') {
   }
   try {
     await pending;
-    if (normalizedDeliveryId) {
-      deliveryStore.deliveries[normalizedDeliveryId] = { sentAt: nowIso() };
-      saveTelegramDeliveryStore(deliveryStore);
+    if (deliveryRef) {
+      await deliveryRef.set({
+        deliveryId: normalizedDeliveryId,
+        sentAt: nowIso(),
+        textHash: crypto.createHash('sha256').update(normalizedText).digest('hex'),
+      });
     }
     return { deduplicated: false };
   } finally {
@@ -767,7 +933,7 @@ async function sendTelegramMessage(req, res) {
 
   try {
     const payload = await readJsonBody(req);
-    resolveSession(loadAuthStore());
+    await resolveSession(await loadAuthStore(), payload, req);
     const delivered = await deliverTelegramText(payload.text, payload.deliveryId);
     sendJson(res, 200, { ok: true, ...delivered });
   } catch (error) {
@@ -777,6 +943,12 @@ async function sendTelegramMessage(req, res) {
 
 function signalDocumentId(signal) {
   return String(signal?.id || '').replace(/\//g, '_').slice(0, 240);
+}
+
+function deliveryDocumentId(deliveryId) {
+  const normalized = String(deliveryId || '').trim();
+  if (!normalized) return '';
+  return crypto.createHash('sha256').update(normalized).digest('hex');
 }
 
 function normalizeTradeSignal(input) {
@@ -821,13 +993,11 @@ async function handleTradeSignals(req, res, url) {
 
   try {
     const payload = await readJsonBody(req);
-    const auth = resolveSession(loadAuthStore());
-    const db = getFirestore();
-    if (!db) throw sessionError(503, 'Firebase server is not configured.');
-    const collection = db.collection('telegramSignals');
+    const auth = await resolveSession(await loadAuthStore(), payload, req);
+    const db = requireFirestore();
 
     if (url.pathname === '/api/signals/open') {
-      const snapshot = await collection.where('ownerId', '==', auth.user.id).get();
+      const snapshot = await db.collection(telegramSignalsCollectionName).where('ownerId', '==', auth.user.id).get();
       const signals = snapshot.docs
         .map((document) => document.data())
         .filter((signal) => signal && !signal.closed)
@@ -838,8 +1008,9 @@ async function handleTradeSignals(req, res, url) {
     }
 
     const incoming = Array.isArray(payload.signals) ? payload.signals.slice(-10) : [];
-    const batch = db.batch();
     const syncedAt = nowIso();
+    const collection = db.collection(telegramSignalsCollectionName);
+    const batch = db.batch();
     for (const input of incoming) {
       const signal = normalizeTradeSignal(input);
       batch.set(collection.doc(signal.id), {
@@ -865,22 +1036,196 @@ function twelveDataSignalSymbol(symbol) {
 }
 
 async function fetchSignalPrice(symbol) {
+  return fetchRealtimePrice(symbol);
+}
+
+function marketKeyCandidates(token = '') {
+  return [
+    String(token || '').trim(),
+    ...marketApiKeys,
+  ].filter((key, index, all) => key && all.indexOf(key) === index);
+}
+
+async function fetchRealtimePrice(symbol, token = '') {
+  const normalizedSymbol = String(symbol || 'XAUUSD').trim().toUpperCase();
+  const tokenHash = token ? crypto.createHash('sha1').update(String(token)).digest('hex').slice(0, 10) : 'server';
+  const cacheKey = `${normalizedSymbol}:${tokenHash}`;
+  const cached = priceCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < priceCacheTtlMs) return cached.price;
+
   const target = new URL('https://api.twelvedata.com/price');
-  target.searchParams.set('symbol', twelveDataSignalSymbol(symbol));
+  target.searchParams.set('symbol', twelveDataSignalSymbol(normalizedSymbol));
   let lastError = 'No Twelve Data key available';
-  for (const key of marketApiKeys) {
+  for (const key of marketKeyCandidates(token)) {
     target.searchParams.set('apikey', key);
     try {
-      const response = await fetch(target, { headers: { 'User-Agent': 'Mozilla/5.0 CRAZII-signal-monitor' } });
+      const response = await fetch(target, { headers: { 'User-Agent': 'Mozilla/5.0 CRAZII-realtime-proxy' } });
       const body = await response.json();
       const price = Number(body?.price);
-      if (response.ok && Number.isFinite(price)) return price;
+      if (response.ok && Number.isFinite(price)) {
+        priceCache.set(cacheKey, { price, at: Date.now() });
+        return price;
+      }
       lastError = body?.message || `Twelve Data returned ${response.status}`;
     } catch (error) {
       lastError = error.message;
     }
   }
-  throw new Error(`Twelve Data price unavailable for ${symbol}: ${lastError}`);
+  throw new Error(`Twelve Data price unavailable for ${normalizedSymbol}: ${lastError}`);
+}
+
+function websocketAcceptKey(key) {
+  return crypto
+    .createHash('sha1')
+    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+    .digest('base64');
+}
+
+function websocketFrame(payload) {
+  const body = Buffer.from(String(payload));
+  const length = body.length;
+  if (length < 126) return Buffer.concat([Buffer.from([0x81, length]), body]);
+  if (length < 65536) {
+    const header = Buffer.alloc(4);
+    header[0] = 0x81;
+    header[1] = 126;
+    header.writeUInt16BE(length, 2);
+    return Buffer.concat([header, body]);
+  }
+  const header = Buffer.alloc(10);
+  header[0] = 0x81;
+  header[1] = 127;
+  header.writeBigUInt64BE(BigInt(length), 2);
+  return Buffer.concat([header, body]);
+}
+
+function sendWebSocketJson(socket, payload) {
+  if (socket.destroyed) return;
+  socket.write(websocketFrame(JSON.stringify(payload)));
+}
+
+function websocketCloseFrame() {
+  return Buffer.from([0x88, 0x00]);
+}
+
+function closeWebSocket(socket) {
+  if (socket.destroyed) return;
+  try {
+    socket.write(websocketCloseFrame());
+  } catch (error) {
+    // Ignore close races.
+  }
+  socket.destroy();
+}
+
+function priceStreamKey(symbol, token = '') {
+  const normalizedSymbol = String(symbol || 'XAUUSD').trim().toUpperCase();
+  const tokenHash = token ? crypto.createHash('sha1').update(String(token)).digest('hex').slice(0, 10) : 'server';
+  return `${normalizedSymbol}:${tokenHash}`;
+}
+
+function stopPriceStreamIfIdle(key) {
+  const stream = priceStreams.get(key);
+  if (!stream || stream.clients.size) return;
+  clearInterval(stream.timer);
+  priceStreams.delete(key);
+}
+
+function getPriceStream(symbol, token = '') {
+  const key = priceStreamKey(symbol, token);
+  let stream = priceStreams.get(key);
+  if (stream) return stream;
+
+  stream = {
+    key,
+    symbol: String(symbol || 'XAUUSD').trim().toUpperCase(),
+    token: String(token || '').trim(),
+    clients: new Set(),
+    timer: null,
+    busy: false,
+  };
+
+  const tick = async () => {
+    if (stream.busy) return;
+    stream.busy = true;
+    try {
+      const price = await fetchRealtimePrice(stream.symbol, stream.token);
+      const payload = {
+        type: 'price',
+        source: 'twelvedata-proxy',
+        symbol: stream.symbol,
+        price,
+        timestamp: Date.now(),
+      };
+      for (const client of stream.clients) sendWebSocketJson(client, payload);
+    } catch (error) {
+      const payload = {
+        type: 'error',
+        source: 'twelvedata-proxy',
+        symbol: stream.symbol,
+        error: error.message,
+        timestamp: Date.now(),
+      };
+      for (const client of stream.clients) sendWebSocketJson(client, payload);
+    } finally {
+      stream.busy = false;
+    }
+  };
+
+  stream.timer = setInterval(tick, 1000);
+  priceStreams.set(key, stream);
+  tick();
+  return stream;
+}
+
+async function handlePriceWebSocket(req, socket) {
+  const key = req.headers['sec-websocket-key'];
+  if (!key) {
+    socket.destroy();
+    return;
+  }
+
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
+    if (await enforceDeviceGate(req, { writeHead: () => {}, end: () => {} })) {
+      socket.destroy();
+      return;
+    }
+
+    socket.write([
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      `Sec-WebSocket-Accept: ${websocketAcceptKey(key)}`,
+      '',
+      '',
+    ].join('\r\n'));
+
+    const stream = getPriceStream(url.searchParams.get('symbol') || 'XAUUSD', url.searchParams.get('apikey') || url.searchParams.get('token') || '');
+    stream.clients.add(socket);
+    sendWebSocketJson(socket, {
+      type: 'ready',
+      source: 'twelvedata-proxy',
+      symbol: stream.symbol,
+      intervalMs: 1000,
+      timestamp: Date.now(),
+    });
+
+    const cleanup = () => {
+      stream.clients.delete(socket);
+      stopPriceStreamIfIdle(stream.key);
+    };
+    socket.on('close', cleanup);
+    socket.on('error', cleanup);
+    socket.on('data', (buffer) => {
+      const opcode = buffer[0] & 0x0f;
+      if (opcode === 0x8) closeWebSocket(socket);
+      if (opcode === 0x9 && !socket.destroyed) socket.write(Buffer.from([0x8a, 0x00]));
+    });
+  } catch (error) {
+    console.warn(`Price websocket refused: ${error.message}`);
+    socket.destroy();
+  }
 }
 
 function formatServerTradeUpdate(signal, result, price) {
@@ -900,10 +1245,14 @@ async function monitorTradeSignals() {
   if (!db) return;
   signalMonitorRunning = true;
   try {
-    const snapshot = await db.collection('telegramSignals').where('closed', '==', false).get();
+    const snapshot = await db.collection(telegramSignalsCollectionName).where('closed', '==', false).get();
+    const docs = snapshot.docs.map((document) => ({
+      signal: document.data(),
+      set: (updates) => document.ref.set(updates, { merge: true }),
+    }));
     const prices = new Map();
-    for (const document of snapshot.docs) {
-      const signal = document.data();
+    for (const document of docs) {
+      const signal = document.signal;
       if (!prices.has(signal.symbol)) {
         try {
           prices.set(signal.symbol, await fetchSignalPrice(signal.symbol));
@@ -923,7 +1272,7 @@ async function monitorTradeSignals() {
         const result = signal.breakEvenMoved && Math.abs(Number(signal.sl) - Number(signal.entry)) < 0.000001 ? 'BE' : 'SL';
         await deliverTelegramText(formatServerTradeUpdate(signal, result, price), `result:${signal.id}:${result}`);
         Object.assign(updates, { closed: true, closedAt: Date.now(), closeResult: result, tpHits });
-        await document.ref.set(updates, { merge: true });
+        await document.set(updates);
         continue;
       }
 
@@ -944,7 +1293,7 @@ async function monitorTradeSignals() {
         if (name === 'TP3') Object.assign(updates, { closed: true, closedAt: Date.now(), closeResult: name });
       }
       updates.tpHits = tpHits;
-      await document.ref.set(updates, { merge: true });
+      await document.set(updates);
     }
   } catch (error) {
     console.error(`Signal monitor error: ${error.message}`);
@@ -1053,7 +1402,7 @@ function serveFile(res, pathname) {
   });
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
 
   if (req.method === 'OPTIONS') {
@@ -1061,7 +1410,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (enforceDeviceGate(req, res)) return;
+  try {
+    if (await enforceDeviceGate(req, res)) return;
+  } catch (error) {
+    sendJson(res, error.status || 503, {
+      ok: false,
+      error: error.message || 'Firebase server is not configured.',
+      reason: error.reason || 'firebase_required',
+    });
+    return;
+  }
 
   if (url.pathname === '/api/telegram/send') {
     sendTelegramMessage(req, res);
@@ -1134,6 +1492,15 @@ const server = http.createServer((req, res) => {
   }
 
   serveFile(res, decodeURIComponent(url.pathname));
+});
+
+server.on('upgrade', (req, socket) => {
+  const url = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
+  if (url.pathname !== '/api/ws/price') {
+    socket.destroy();
+    return;
+  }
+  handlePriceWebSocket(req, socket);
 });
 
 server.listen(port, host, () => {
