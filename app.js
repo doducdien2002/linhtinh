@@ -179,6 +179,9 @@ let telegramQueuedPrice = null;
 let telegramRetryTimer = null;
 let signalDetectionReady = false;
 let signalNoticeCollapsed = false;
+let signalNoticeDragState = null;
+let twelveDataStreamPollMs = 60_000;
+const SIGNAL_NOTICE_POSITION_KEY = 'signalNoticePosition';
 function savedHiddenDefaultOn(key) {
   const saved = window.localStorage.getItem(key);
   return saved === null ? true : saved === '1';
@@ -337,6 +340,7 @@ const fallbackPollMs = {
     default: 60_000,
   },
 };
+const dailyRefreshMinMs = 15 * 60_000;
 
 const BEARISHNESS_SCALE = {
   min: -420,
@@ -3593,6 +3597,94 @@ function renderSignalNotice(candles, markers, levels) {
   checkTelegramSignalPrice(levels.price);
 }
 
+function readSignalNoticePosition() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(SIGNAL_NOTICE_POSITION_KEY) || 'null');
+    if (Number.isFinite(saved?.x) && Number.isFinite(saved?.y)) return saved;
+  } catch (error) {
+    window.localStorage.removeItem(SIGNAL_NOTICE_POSITION_KEY);
+  }
+  return null;
+}
+
+function signalNoticeFrame() {
+  return el.signalNotice?.closest('.chart-frame') || el.chart?.parentElement || document.body;
+}
+
+function clampSignalNoticePosition(x, y) {
+  const frame = signalNoticeFrame();
+  const notice = el.signalNotice;
+  const margin = 8;
+  const frameWidth = frame?.clientWidth || window.innerWidth;
+  const frameHeight = frame?.clientHeight || window.innerHeight;
+  const width = notice?.offsetWidth || 360;
+  const height = notice?.offsetHeight || 180;
+  return {
+    x: clamp(x, margin, Math.max(margin, frameWidth - width - margin)),
+    y: clamp(y, margin, Math.max(margin, frameHeight - height - margin)),
+  };
+}
+
+function applySignalNoticePosition(x, y, persist = true) {
+  if (!el.signalNotice) return;
+  const position = clampSignalNoticePosition(Number(x), Number(y));
+  el.signalNotice.classList.add('signal-custom-position');
+  el.signalNotice.style.left = `${position.x}px`;
+  el.signalNotice.style.top = `${position.y}px`;
+  el.signalNotice.style.right = 'auto';
+  el.signalNotice.style.bottom = 'auto';
+  if (persist) {
+    window.localStorage.setItem(SIGNAL_NOTICE_POSITION_KEY, JSON.stringify(position));
+  }
+}
+
+function restoreSignalNoticePosition() {
+  const position = readSignalNoticePosition();
+  if (position) applySignalNoticePosition(position.x, position.y, false);
+}
+
+function initSignalNoticeDrag() {
+  const notice = el.signalNotice;
+  const handle = notice?.querySelector('.signal-head');
+  if (!notice || !handle) return;
+
+  restoreSignalNoticePosition();
+
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    if (event.target.closest('button')) return;
+    const frameRect = signalNoticeFrame().getBoundingClientRect();
+    const noticeRect = notice.getBoundingClientRect();
+    signalNoticeDragState = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - noticeRect.left,
+      offsetY: event.clientY - noticeRect.top,
+      frameLeft: frameRect.left,
+      frameTop: frameRect.top,
+    };
+    notice.classList.add('signal-dragging');
+    notice.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  });
+
+  notice.addEventListener('pointermove', (event) => {
+    if (!signalNoticeDragState || signalNoticeDragState.pointerId !== event.pointerId) return;
+    const x = event.clientX - signalNoticeDragState.frameLeft - signalNoticeDragState.offsetX;
+    const y = event.clientY - signalNoticeDragState.frameTop - signalNoticeDragState.offsetY;
+    applySignalNoticePosition(x, y, true);
+  });
+
+  const finishDrag = (event) => {
+    if (!signalNoticeDragState || signalNoticeDragState.pointerId !== event.pointerId) return;
+    notice.classList.remove('signal-dragging');
+    notice.releasePointerCapture?.(event.pointerId);
+    signalNoticeDragState = null;
+  };
+
+  notice.addEventListener('pointerup', finishDrag);
+  notice.addEventListener('pointercancel', finishDrag);
+}
+
 function closeLiveSocket() {
   window.clearTimeout(tickPollTimer);
   window.clearTimeout(fullRenderTimer);
@@ -3778,8 +3870,8 @@ function startFinnhubStream(symbol, interval, limit, token) {
 function fallbackToYahoo(sourceName, symbol, interval, limit, reason = '') {
   closeLiveSocket();
   const detail = reason ? ` (${reason})` : '';
-  el.status.textContent = `${sourceName} loi${detail}, dang thu lai qua REST poll`;
-  startTickerFallback('twelvedata', symbol, interval, limit, tickPollToken || el.token.value.trim());
+  el.status.textContent = `${sourceName} loi${detail}, dang chay Yahoo du phong`;
+  startTickerFallback('yahoo', symbol, interval, limit, '');
 }
 
 function startTwelveDataStream(symbol, interval, limit, token) {
@@ -3799,17 +3891,21 @@ function startTwelveDataStream(symbol, interval, limit, token) {
         liveSocket.send('ping');
       }
     }, 15000);
-    el.status.textContent = `${symbol} ${interval} PROXY TICK 1S`;
+    el.status.textContent = `${symbol} ${interval} PROXY dang ket noi`;
   };
 
   liveSocket.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type === 'ready') {
-      el.status.textContent = `${symbol} proxy realtime 1s da ket noi`;
+      twelveDataStreamPollMs = Number(message.intervalMs) || twelveDataStreamPollMs;
+      el.status.textContent = `${symbol} proxy ${Math.round(twelveDataStreamPollMs / 1000)}s da ket noi`;
       return;
     }
     if (message.type === 'error') {
       el.status.textContent = `${symbol} proxy loi: ${message.error || 'stream error'}`;
+      if (isTwelveDataLimitError(providerError('twelvedata', message.error || 'stream error'))) {
+        fallbackToYahoo('TwelveData', symbol, interval, limit, message.error || 'het credit');
+      }
       return;
     }
 
@@ -3820,7 +3916,7 @@ function startTwelveDataStream(symbol, interval, limit, token) {
     const candle = updateCurrentPrice(price, interval, limit, Math.floor(timestampMs / 1000));
     if (candle) renderLiveCandle(candle, price);
     maybeRefreshComputed(1000);
-    el.status.textContent = `${symbol} PROXY 1S ${formatPrice(price)} ${new Date(timestampMs).toLocaleTimeString()}`;
+    el.status.textContent = `${symbol} PROXY ${Math.round(twelveDataStreamPollMs / 1000)}S ${formatPrice(price)} ${new Date(timestampMs).toLocaleTimeString()}`;
   };
 
   liveSocket.onerror = () => {
@@ -3831,7 +3927,7 @@ function startTwelveDataStream(symbol, interval, limit, token) {
     window.clearInterval(socketHeartbeatTimer);
     socketHeartbeatTimer = null;
     liveSocket = null;
-    if (!tickPollTimer) startTickerFallback('twelvedata', symbol, interval, limit, token);
+    if (!tickPollTimer) startTickerFallback('yahoo', symbol, interval, limit, '');
   };
 }
 
@@ -3923,9 +4019,16 @@ async function loadChart() {
       ]);
     } catch (error) {
       if (source === 'twelvedata' && isTwelveDataLimitError(error)) {
-        throw new Error(`TwelveData het han muc hoac API key khong hop le: ${error.message}`);
+        activeSource = 'yahoo';
+        activeToken = '';
+        el.status.textContent = `TwelveData het han muc, dang dung Yahoo du phong...`;
+        [candles, dailyCandles] = await Promise.all([
+          fetchMarketCandles(activeSource, symbol, interval, limit, activeToken),
+          fetchMarketDaily(activeSource, symbol, activeToken),
+        ]);
+      } else {
+        throw error;
       }
-      throw error;
     }
 
     currentCandles = candles;
@@ -3945,7 +4048,7 @@ async function loadChart() {
         }
         throw error;
       }
-    }, Math.max(intervalMs[interval] || 60_000, 60_000));
+    }, Math.max(intervalMs[interval] || dailyRefreshMinMs, dailyRefreshMinMs));
   } catch (error) {
     console.error(error);
     el.status.textContent = error.message;
@@ -4123,11 +4226,14 @@ window.addEventListener('resize', () => {
   if (!el.signalFilterMenu?.classList.contains('hidden')) {
     positionFixedPanel(el.signalFilterMenu, el.signalFilterButton, { align: 'right' });
   }
+  const signalPosition = readSignalNoticePosition();
+  if (signalPosition) applySignalNoticePosition(signalPosition.x, signalPosition.y, true);
 });
 window.addEventListener('orientationchange', () => {
   setSignalFilterMenuOpen(false);
   setAdvancedControlsOpen(false);
 });
+initSignalNoticeDrag();
 el.hideSignal?.addEventListener('click', () => {
   signalNoticeCollapsed = true;
   syncSignalToggle(Boolean(latestSignalCopy));

@@ -20,6 +20,7 @@ let authStoreCache = null;
 let authStoreCacheAt = 0;
 const deviceCache = new Map();
 const priceCache = new Map();
+const proxyResponseCache = new Map();
 const priceStreams = new Map();
 const runtimeCollectionName = process.env.FIRESTORE_RUNTIME_COLLECTION || 'craziiRuntime';
 const authStoreDocName = process.env.FIRESTORE_AUTH_DOC || 'authStore';
@@ -28,7 +29,11 @@ const telegramDeliveriesCollectionName = process.env.FIRESTORE_DELIVERIES_COLLEC
 const telegramSignalsCollectionName = process.env.FIRESTORE_SIGNALS_COLLECTION || 'telegramSignals';
 const authCacheTtlMs = Number(process.env.AUTH_CACHE_TTL_MS || 5000);
 const deviceWriteIntervalMs = Number(process.env.DEVICE_WRITE_INTERVAL_MS || 300000);
-const priceCacheTtlMs = Number(process.env.PRICE_CACHE_TTL_MS || 900);
+const realtimePricePollMs = Math.max(Number(process.env.REALTIME_PRICE_POLL_MS || 60_000), 10_000);
+const priceCacheTtlMs = Math.max(Number(process.env.PRICE_CACHE_TTL_MS || realtimePricePollMs - 1000), 5_000);
+const signalMonitorIntervalMs = Math.max(Number(process.env.SIGNAL_MONITOR_MS || 60_000), 10_000);
+const apiLimitCooldownMs = Math.max(Number(process.env.TWELVEDATA_LIMIT_COOLDOWN_MS || 60 * 60_000), 60_000);
+const proxyDailyCacheTtlMs = Math.max(Number(process.env.PROXY_DAILY_CACHE_TTL_MS || 15 * 60_000), 60_000);
 const marketApiKeys = [
   ...(process.env.MARKET_API_KEYS || '')
     .split(',')
@@ -37,6 +42,8 @@ const marketApiKeys = [
   '3465f94ff4d64f2e94cc85ef80b50272',
   'e8f78a96e634470588a4f1f2e2449972',
 ].filter((key, index, all) => all.indexOf(key) === index);
+const priceFetchPending = new Map();
+const apiLimitCooldowns = new Map();
 const blockedFileNames = new Set([
   '.env',
   '.env.local',
@@ -1046,32 +1053,76 @@ function marketKeyCandidates(token = '') {
   ].filter((key, index, all) => key && all.indexOf(key) === index);
 }
 
+function apiKeyLabel(key) {
+  return crypto.createHash('sha1').update(String(key || '')).digest('hex').slice(0, 8);
+}
+
+function apiKeyCooldownUntil(key) {
+  const until = apiLimitCooldowns.get(key);
+  if (!until) return 0;
+  if (Date.now() >= until) {
+    apiLimitCooldowns.delete(key);
+    return 0;
+  }
+  return until;
+}
+
+function markApiKeyCoolingDown(key, reason = '') {
+  const until = Date.now() + apiLimitCooldownMs;
+  apiLimitCooldowns.set(key, until);
+  console.warn(`TwelveData key ${apiKeyLabel(key)} cooldown ${Math.ceil(apiLimitCooldownMs / 60000)}m${reason ? `: ${reason}` : ''}`);
+}
+
+function clearApiKeyCooldown(key) {
+  apiLimitCooldowns.delete(key);
+}
+
 async function fetchRealtimePrice(symbol, token = '') {
   const normalizedSymbol = String(symbol || 'XAUUSD').trim().toUpperCase();
   const tokenHash = token ? crypto.createHash('sha1').update(String(token)).digest('hex').slice(0, 10) : 'server';
   const cacheKey = `${normalizedSymbol}:${tokenHash}`;
   const cached = priceCache.get(cacheKey);
   if (cached && Date.now() - cached.at < priceCacheTtlMs) return cached.price;
+  const pending = priceFetchPending.get(cacheKey);
+  if (pending) return pending;
 
-  const target = new URL('https://api.twelvedata.com/price');
-  target.searchParams.set('symbol', twelveDataSignalSymbol(normalizedSymbol));
-  let lastError = 'No Twelve Data key available';
-  for (const key of marketKeyCandidates(token)) {
-    target.searchParams.set('apikey', key);
-    try {
-      const response = await fetch(target, { headers: { 'User-Agent': 'Mozilla/5.0 CRAZII-realtime-proxy' } });
-      const body = await response.json();
-      const price = Number(body?.price);
-      if (response.ok && Number.isFinite(price)) {
-        priceCache.set(cacheKey, { price, at: Date.now() });
-        return price;
+  const request = (async () => {
+    const target = new URL('https://api.twelvedata.com/price');
+    target.searchParams.set('symbol', twelveDataSignalSymbol(normalizedSymbol));
+    let lastError = 'No Twelve Data key available';
+    for (const key of marketKeyCandidates(token)) {
+      const coolingUntil = apiKeyCooldownUntil(key);
+      if (coolingUntil) {
+        lastError = `key cooldown, retry in ${Math.ceil((coolingUntil - Date.now()) / 1000)}s`;
+        continue;
       }
-      lastError = body?.message || `Twelve Data returned ${response.status}`;
-    } catch (error) {
-      lastError = error.message;
+      target.searchParams.set('apikey', key);
+      try {
+        const response = await fetch(target, { headers: { 'User-Agent': 'Mozilla/5.0 CRAZII-realtime-proxy' } });
+        const body = await response.json();
+        const price = Number(body?.price);
+        if (response.ok && Number.isFinite(price)) {
+          clearApiKeyCooldown(key);
+          priceCache.set(cacheKey, { price, at: Date.now() });
+          return price;
+        }
+        lastError = body?.message || `Twelve Data returned ${response.status}`;
+        if (looksLikeApiLimit(response.status, JSON.stringify(body))) {
+          markApiKeyCoolingDown(key, lastError);
+        }
+      } catch (error) {
+        lastError = error.message;
+      }
     }
+    throw new Error(`Twelve Data price unavailable for ${normalizedSymbol}: ${lastError}`);
+  })();
+
+  priceFetchPending.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    priceFetchPending.delete(cacheKey);
   }
-  throw new Error(`Twelve Data price unavailable for ${normalizedSymbol}: ${lastError}`);
 }
 
 function websocketAcceptKey(key) {
@@ -1172,7 +1223,7 @@ function getPriceStream(symbol, token = '') {
     }
   };
 
-  stream.timer = setInterval(tick, 1000);
+  stream.timer = setInterval(tick, realtimePricePollMs);
   priceStreams.set(key, stream);
   tick();
   return stream;
@@ -1207,7 +1258,7 @@ async function handlePriceWebSocket(req, socket) {
       type: 'ready',
       source: 'twelvedata-proxy',
       symbol: stream.symbol,
-      intervalMs: 1000,
+      intervalMs: realtimePricePollMs,
       timestamp: Date.now(),
     });
 
@@ -1332,9 +1383,32 @@ function looksLikeApiLimit(status, body) {
     || text.includes('invalid token');
 }
 
+function proxyCacheKey(target, keyParam) {
+  const cachedTarget = new URL(target);
+  cachedTarget.searchParams.delete(keyParam);
+  cachedTarget.searchParams.delete('_');
+  cachedTarget.searchParams.delete('t');
+  return cachedTarget.toString();
+}
+
+function proxyCacheTtlMs(target) {
+  if (target.pathname.endsWith('/price')) return priceCacheTtlMs;
+  const interval = String(target.searchParams.get('interval') || '').toLowerCase();
+  if (interval === '1day' || interval === '1d') return proxyDailyCacheTtlMs;
+  return Math.max(realtimePricePollMs, 60_000);
+}
+
 async function proxyJsonWithKeyFallback(res, target, keyParam) {
-  if (target.searchParams.get(keyParam) || !marketApiKeys.length) {
+  const keyCandidates = marketKeyCandidates(target.searchParams.get(keyParam));
+  if (!keyCandidates.length) {
     proxyJson(res, target);
+    return;
+  }
+
+  const cachedKey = proxyCacheKey(target, keyParam);
+  const cached = proxyResponseCache.get(cachedKey);
+  if (cached && Date.now() - cached.at < cached.ttlMs) {
+    send(res, cached.status, cached.body, cached.type);
     return;
   }
 
@@ -1342,7 +1416,17 @@ async function proxyJsonWithKeyFallback(res, target, keyParam) {
   let lastBody = '';
   let lastType = 'application/json; charset=utf-8';
 
-  for (const key of marketApiKeys) {
+  for (const key of keyCandidates) {
+    const coolingUntil = apiKeyCooldownUntil(key);
+    if (coolingUntil) {
+      lastStatus = 429;
+      lastBody = JSON.stringify({
+        status: 'error',
+        message: `TwelveData key cooling down, retry in ${Math.ceil((coolingUntil - Date.now()) / 1000)}s`,
+      });
+      continue;
+    }
+
     const keyedTarget = new URL(target);
     keyedTarget.searchParams.set(keyParam, key);
 
@@ -1358,9 +1442,20 @@ async function proxyJsonWithKeyFallback(res, target, keyParam) {
       lastBody = body;
       lastType = upstream.headers.get('content-type') || 'application/json; charset=utf-8';
       if (!looksLikeApiLimit(upstream.status, body)) {
+        clearApiKeyCooldown(key);
+        if (upstream.ok) {
+          proxyResponseCache.set(cachedKey, {
+            status: upstream.status,
+            body,
+            type: lastType,
+            at: Date.now(),
+            ttlMs: proxyCacheTtlMs(keyedTarget),
+          });
+        }
         send(res, upstream.status, body, lastType);
         return;
       }
+      markApiKeyCoolingDown(key, body.slice(0, 180));
     } catch (error) {
       lastStatus = 502;
       lastBody = JSON.stringify({ error: error.message });
@@ -1506,5 +1601,5 @@ server.on('upgrade', (req, socket) => {
 server.listen(port, host, () => {
   console.log(`CRAZII chart running at http://127.0.0.1:${port} (LAN: http://<server-ip>:${port})`);
   monitorTradeSignals();
-  setInterval(monitorTradeSignals, Number(process.env.SIGNAL_MONITOR_MS || 10_000));
+  setInterval(monitorTradeSignals, signalMonitorIntervalMs);
 });
