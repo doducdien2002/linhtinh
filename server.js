@@ -1046,10 +1046,22 @@ async function fetchSignalPrice(symbol) {
   return fetchRealtimePrice(symbol);
 }
 
+let marketKeyRotationIndex = 0;
+
 function marketKeyCandidates(token = '') {
+  const total = marketApiKeys.length;
+  const rotated = [];
+  if (total) {
+    const start = marketKeyRotationIndex % total;
+    for (let i = 0; i < total; i += 1) {
+      rotated.push(marketApiKeys[(start + i) % total]);
+    }
+    marketKeyRotationIndex = (marketKeyRotationIndex + 1) % total;
+  }
+
   return [
     String(token || '').trim(),
-    ...marketApiKeys,
+    ...rotated,
   ].filter((key, index, all) => key && all.indexOf(key) === index);
 }
 

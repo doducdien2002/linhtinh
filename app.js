@@ -337,7 +337,7 @@ const fallbackPollMs = {
     default: 450,
   },
   twelvedata: {
-    default: 60_000,
+    default: 1_000,
   },
 };
 const dailyRefreshMinMs = 15 * 60_000;
@@ -1176,9 +1176,12 @@ async function fetchFinnhubQuote(symbol, token) {
 }
 
 async function fetchTwelveDataPrice(symbol, token) {
-  const params = new URLSearchParams({ symbol: toTwelveDataSymbol(symbol) });
+  const params = new URLSearchParams({
+    symbol: toTwelveDataSymbol(symbol),
+    _: String(Date.now()),   // ← chống cache
+  });
   if (token) params.set('apikey', token);
-  const response = await fetch(`/api/twelvedata/price?${params}`);
+  const response = await fetch(`/api/twelvedata/price?${params}`, { cache: 'no-store' });
   if (!response.ok) throw providerError('twelvedata', `TwelveData price returned ${response.status}.`);
 
   const data = await response.json();
@@ -3816,6 +3819,7 @@ function startTickerFallback(source, symbol, interval, limit, token = '') {
   const pollMs = fallbackPollMs[source]?.[interval] || fallbackPollMs[source]?.default || 350;
 
   const poll = async () => {
+    const startedAt = Date.now(); // <-- THÊM DÒNG NÀY
     try {
       const price = await fetchMarketPrice(source, symbol, token);
       const candle = updateCurrentPrice(price, interval, limit);
@@ -3826,7 +3830,7 @@ function startTickerFallback(source, symbol, interval, limit, token = '') {
     } catch (error) {
       console.error(error);
     } finally {
-      tickPollTimer = window.setTimeout(poll, pollMs);
+      tickPollTimer = window.setTimeout(poll, Math.max(150, pollMs - (Date.now() - startedAt)));
     }
   };
 
