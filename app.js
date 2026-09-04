@@ -181,6 +181,9 @@ let signalDetectionReady = false;
 let signalNoticeCollapsed = false;
 let signalNoticeDragState = null;
 let twelveDataStreamPollMs = 60_000;
+let twelveDataReconnectAttempts = 0;
+let finnhubReconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 6;
 const SIGNAL_NOTICE_POSITION_KEY = 'signalNoticePosition';
 function savedHiddenDefaultOn(key) {
   const saved = window.localStorage.getItem(key);
@@ -3896,10 +3899,10 @@ function startFinnhubStream(symbol, interval, limit, token) {
   liveSocket = new WebSocket(`wss://ws.finnhub.io?token=${encodeURIComponent(token)}`);
 
   liveSocket.onopen = () => {
+    finnhubReconnectAttempts = 0;
     liveSocket.send(JSON.stringify({ type: 'subscribe', symbol: finnhubSymbol }));
     el.status.textContent = `${symbol} ${interval} FINNHUB TICK`;
   };
-
   liveSocket.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type !== 'trade' || !Array.isArray(message.data)) return;
@@ -3913,17 +3916,27 @@ function startFinnhubStream(symbol, interval, limit, token) {
     el.status.textContent = `${symbol} FINNHUB ${formatPrice(price)}`;
   };
 
-  liveSocket.onerror = () => {
-    el.status.textContent = `${symbol} ${interval} Finnhub socket lá»—i, Ä‘ang poll dá»± phÃ²ng`;
-    startTickerFallback('finnhub', symbol, interval, limit, token);
+    liveSocket.onerror = () => {
+    el.status.textContent = `${symbol} ${interval} Finnhub loi, dang thu ket noi lai...`;
   };
 
   liveSocket.onclose = () => {
     liveSocket = null;
-    if (!tickPollTimer) startTickerFallback('finnhub', symbol, interval, limit, token);
+
+    if (finnhubReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      const delay = Math.min(2000 * 2 ** finnhubReconnectAttempts, 30000);
+      finnhubReconnectAttempts += 1;
+      el.status.textContent = `${symbol} Finnhub mat ket noi, thu lai sau ${Math.round(delay / 1000)}s...`;
+      window.setTimeout(() => {
+        if (el.source.value === 'finnhub') {
+          startFinnhubStream(symbol, interval, limit, token);
+        }
+      }, delay);
+    } else {
+      startTickerFallback('finnhub', symbol, interval, limit, token);
+    }
   };
 }
-
 function fallbackToYahoo(sourceName, symbol, interval, limit, reason = '') {
   closeLiveSocket();
   const detail = reason ? ` (${reason})` : '';
@@ -3942,7 +3955,8 @@ function startTwelveDataStream(symbol, interval, limit, token) {
   if (token) params.set('apikey', token);
   liveSocket = new WebSocket(`${protocol}//${window.location.host}/api/ws/price?${params}`);
 
-  liveSocket.onopen = () => {
+    liveSocket.onopen = () => {
+    twelveDataReconnectAttempts = 0;
     socketHeartbeatTimer = window.setInterval(() => {
       if (liveSocket?.readyState === WebSocket.OPEN) {
         liveSocket.send('ping');
@@ -3976,18 +3990,29 @@ function startTwelveDataStream(symbol, interval, limit, token) {
     el.status.textContent = `${symbol} PROXY ${Math.round(twelveDataStreamPollMs / 1000)}S ${formatPrice(price)} ${new Date(timestampMs).toLocaleTimeString()}`;
   };
 
-  liveSocket.onerror = () => {
-    fallbackToYahoo('Proxy', symbol, interval, limit, 'websocket loi');
+   liveSocket.onerror = () => {
+    el.status.textContent = `${symbol} proxy loi, dang thu ket noi lai...`;
   };
 
   liveSocket.onclose = () => {
     window.clearInterval(socketHeartbeatTimer);
     socketHeartbeatTimer = null;
     liveSocket = null;
-    if (!tickPollTimer) startTickerFallback('yahoo', symbol, interval, limit, '');
+
+    if (twelveDataReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      const delay = Math.min(2000 * 2 ** twelveDataReconnectAttempts, 30000);
+      twelveDataReconnectAttempts += 1;
+      el.status.textContent = `${symbol} proxy mat ket noi, thu lai sau ${Math.round(delay / 1000)}s...`;
+      window.setTimeout(() => {
+        if (el.source.value === 'twelvedata') {
+          startTwelveDataStream(symbol, interval, limit, token);
+        }
+      }, delay);
+    } else {
+      fallbackToYahoo('Proxy', symbol, interval, limit, 'mat ket noi qua nhieu lan');
+    }
   };
 }
-
 function startBinanceStream(symbol, interval, limit) {
   closeLiveSocket();
   const stream = `${symbol.toLowerCase()}@kline_${interval}`;
@@ -4271,6 +4296,11 @@ for (const checkbox of el.levelVisibilityCheckboxes) {
 document.addEventListener('click', () => {
   setSignalFilterMenuOpen(false);
   setAdvancedControlsOpen(false);
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !liveSocket && !tickPollTimer && authState.sessionId) {
+    loadChart();
+  }
 });
 document.querySelector('.toolbar')?.addEventListener('scroll', () => {
   setSignalFilterMenuOpen(false);
