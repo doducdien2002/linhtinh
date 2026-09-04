@@ -29,7 +29,7 @@ const telegramDeliveriesCollectionName = process.env.FIRESTORE_DELIVERIES_COLLEC
 const telegramSignalsCollectionName = process.env.FIRESTORE_SIGNALS_COLLECTION || 'telegramSignals';
 const authCacheTtlMs = Number(process.env.AUTH_CACHE_TTL_MS || 5000);
 const deviceWriteIntervalMs = Number(process.env.DEVICE_WRITE_INTERVAL_MS || 300000);
-const realtimePricePollMs = Math.max(Number(process.env.REALTIME_PRICE_POLL_MS || 60_000), 10_000);
+const realtimePricePollMs = Math.max(Number(process.env.REALTIME_PRICE_POLL_MS || 60_000), 2_000);
 const priceCacheTtlMs = Math.max(Number(process.env.PRICE_CACHE_TTL_MS || realtimePricePollMs - 1000), 5_000);
 const signalMonitorIntervalMs = Math.max(Number(process.env.SIGNAL_MONITOR_MS || 60_000), 10_000);
 const apiLimitCooldownMs = Math.max(Number(process.env.TWELVEDATA_LIMIT_COOLDOWN_MS || 60 * 60_000), 60_000);
@@ -39,8 +39,7 @@ const marketApiKeys = [
     .split(',')
     .map((key) => key.trim())
     .filter(Boolean),
-  '3465f94ff4d64f2e94cc85ef80b50272',
-  'e8f78a96e634470588a4f1f2e2449972',
+  
 ].filter((key, index, all) => all.indexOf(key) === index);
 const priceFetchPending = new Map();
 const apiLimitCooldowns = new Map();

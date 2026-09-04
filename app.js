@@ -3743,23 +3743,68 @@ function updateLivePriceLine(price) {
   }
 }
 
-function renderLiveCandle(candle, price) {
-  queuedLiveCandle = candle;
-  queuedLivePrice = price;
+// function renderLiveCandle(candle, price) {
+//   queuedLiveCandle = candle;
+//   queuedLivePrice = price;
 
-  if (liveRenderFrame) return;
-  liveRenderFrame = window.requestAnimationFrame(() => {
-    liveRenderFrame = 0;
-    if (queuedLiveCandle) {
-      const livePhases = computeTrendPhases(currentCandles);
-      candleSeries?.update(colorCandle(queuedLiveCandle, livePhases.at(-1)));
-    }
-    updateLivePriceLine(queuedLivePrice);
-    queuedLiveCandle = null;
-    queuedLivePrice = null;
-  });
+//   if (liveRenderFrame) return;
+//   liveRenderFrame = window.requestAnimationFrame(() => {
+//     liveRenderFrame = 0;
+//     if (queuedLiveCandle) {
+//       const livePhases = computeTrendPhases(currentCandles);
+//       candleSeries?.update(colorCandle(queuedLiveCandle, livePhases.at(-1)));
+//     }
+//     updateLivePriceLine(queuedLivePrice);
+//     queuedLiveCandle = null;
+//     queuedLivePrice = null;
+//   });
+// }
+let liveAnimState = null;
+
+function renderLiveCandle(candle, price) {
+  const livePhases = computeTrendPhases(currentCandles);
+  const side = livePhases.at(-1);
+  const now = performance.now();
+  const fromClose = liveAnimState ? liveAnimState.toClose : candle.close;
+  const fromPrice = liveAnimState ? liveAnimState.toPrice : price;
+  const duration = clamp((twelveDataStreamPollMs || 2000) * 0.6, 200, 600);
+
+  liveAnimState = {
+    base: candle,
+    side,
+    fromClose,
+    toClose: candle.close,
+    fromPrice,
+    toPrice: price,
+    start: now,
+    duration,
+  };
+
+  if (!liveRenderFrame) {
+    liveRenderFrame = window.requestAnimationFrame(stepLiveCandleAnimation);
+  }
 }
 
+function stepLiveCandleAnimation(now) {
+  if (!liveAnimState) {
+    liveRenderFrame = 0;
+    return;
+  }
+
+  const t = clamp((now - liveAnimState.start) / liveAnimState.duration, 0, 1);
+  const eased = 1 - (1 - t) * (1 - t); // ease-out cho mượt tự nhiên
+  const displayClose = lerp(liveAnimState.fromClose, liveAnimState.toClose, eased);
+  const displayPrice = lerp(liveAnimState.fromPrice, liveAnimState.toPrice, eased);
+
+  candleSeries?.update(colorCandle({ ...liveAnimState.base, close: displayClose }, liveAnimState.side));
+  updateLivePriceLine(displayPrice);
+
+  if (t < 1) {
+    liveRenderFrame = window.requestAnimationFrame(stepLiveCandleAnimation);
+  } else {
+    liveRenderFrame = 0;
+  }
+}
 function scheduleFullRender(delayMs = 450) {
   window.clearTimeout(fullRenderTimer);
   fullRenderTimer = window.setTimeout(() => {
