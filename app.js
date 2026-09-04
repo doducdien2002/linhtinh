@@ -3765,9 +3765,13 @@ function renderLiveCandle(candle, price) {
   const livePhases = computeTrendPhases(currentCandles);
   const side = livePhases.at(-1);
   const now = performance.now();
-  const fromClose = liveAnimState ? liveAnimState.toClose : candle.close;
-  const fromPrice = liveAnimState ? liveAnimState.toPrice : price;
-  const duration = clamp((twelveDataStreamPollMs || 2000) * 0.6, 200, 600);
+  const fromClose = liveAnimState ? liveAnimState.currentClose : candle.close;
+  const fromPrice = liveAnimState ? liveAnimState.currentPrice : price;
+
+  // Chạy suốt gần hết khoảng chờ giữa 2 lần cập nhật (thay vì chỉ vài trăm ms),
+  // để nến "trôi" liên tục thay vì giật rồi đứng im.
+  const pollMs = twelveDataStreamPollMs || 2000;
+  const duration = clamp(pollMs * 0.92, 400, 15000);
 
   liveAnimState = {
     base: candle,
@@ -3776,6 +3780,8 @@ function renderLiveCandle(candle, price) {
     toClose: candle.close,
     fromPrice,
     toPrice: price,
+    currentClose: fromClose,
+    currentPrice: fromPrice,
     start: now,
     duration,
   };
@@ -3792,18 +3798,20 @@ function stepLiveCandleAnimation(now) {
   }
 
   const t = clamp((now - liveAnimState.start) / liveAnimState.duration, 0, 1);
-  const eased = 1 - (1 - t) * (1 - t); // ease-out cho mượt tự nhiên
+  // easeInOutQuad: mượt cả lúc bắt đầu lẫn lúc gần tới đích, không giật ở 2 đầu
+  const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
   const displayClose = lerp(liveAnimState.fromClose, liveAnimState.toClose, eased);
   const displayPrice = lerp(liveAnimState.fromPrice, liveAnimState.toPrice, eased);
+
+  liveAnimState.currentClose = displayClose;
+  liveAnimState.currentPrice = displayPrice;
 
   candleSeries?.update(colorCandle({ ...liveAnimState.base, close: displayClose }, liveAnimState.side));
   updateLivePriceLine(displayPrice);
 
-  if (t < 1) {
-    liveRenderFrame = window.requestAnimationFrame(stepLiveCandleAnimation);
-  } else {
-    liveRenderFrame = 0;
-  }
+  // Luôn tiếp tục vòng lặp animation (kể cả khi t=1) để sẵn sàng nhận
+  // animation kế tiếp ngay khi renderLiveCandle gọi tới mà không bị khựng khung hình.
+  liveRenderFrame = window.requestAnimationFrame(stepLiveCandleAnimation);
 }
 function scheduleFullRender(delayMs = 450) {
   window.clearTimeout(fullRenderTimer);
