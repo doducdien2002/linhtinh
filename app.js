@@ -181,6 +181,8 @@ let signalDetectionReady = false;
 let signalNoticeCollapsed = false;
 let signalNoticeDragState = null;
 let twelveDataStreamPollMs = 60_000;
+let countdownNode = null;
+let countdownTimer = null;
 const SIGNAL_NOTICE_POSITION_KEY = 'signalNoticePosition';
 function savedHiddenDefaultOn(key) {
   const saved = window.localStorage.getItem(key);
@@ -2719,6 +2721,7 @@ function renderComputed(candles, dailyCandles, shouldFit = false) {
   updatePaneTitles(indicators);
   updateAnalysis(levels, indicators);
   renderSignalNotice(candles, indicators.markers, levels);
+  updateCandleCountdownDisplay();
 
   window.requestAnimationFrame(() => {
     renderLevelBadges(latestLevelItems);
@@ -2901,11 +2904,50 @@ function renderDrawings() {
   }
 }
 
+function formatCandleCountdown(remainingMs) {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function updateCandleCountdownDisplay() {
+  if (!countdownNode) return;
+  const lastCandle = currentCandles.at(-1);
+  if (!lastCandle) {
+    countdownNode.style.display = 'none';
+    return;
+  }
+
+  const step = intervalMs[el.interval.value] || intervalMs['5m'];
+  const closeAtMs = (lastCandle.time * 1000) + step;
+  const remainingMs = closeAtMs - Date.now();
+
+  countdownNode.textContent = `⏳ ${formatIntervalLabel(el.interval.value)} đóng nến: ${formatCandleCountdown(remainingMs)}`;
+  countdownNode.style.display = 'block';
+}
+
+function stopCandleCountdownTimer() {
+  window.clearInterval(countdownTimer);
+  countdownTimer = null;
+}
+
+function startCandleCountdownTimer() {
+  stopCandleCountdownTimer();
+  updateCandleCountdownDisplay();
+  countdownTimer = window.setInterval(updateCandleCountdownDisplay, 1000);
+}
+
 function initChart() {
   if (chart) chart.remove();
   markerLayer?.remove();
   levelLayer?.remove();
   drawLayer?.remove();
+  countdownNode?.remove();
   levelLayer = document.createElement('div');
   levelLayer.className = 'level-layer';
   markerLayer = document.createElement('div');
@@ -2970,6 +3012,27 @@ function initChart() {
   el.chart.appendChild(drawLayer);
   drawLayer.addEventListener('pointerdown', handleDrawPointerDown);
   drawLayer.addEventListener('pointermove', handleDrawPointerMove);
+
+  countdownNode = document.createElement('div');
+  countdownNode.className = 'candle-countdown-badge';
+  Object.assign(countdownNode.style, {
+    position: 'absolute',
+    right: '8px',
+    bottom: '6px',
+    zIndex: '6',
+    pointerEvents: 'none',
+    background: 'rgba(17, 23, 34, 0.85)',
+    color: COLORS.text,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: '4px',
+    padding: '2px 8px',
+    fontSize: '11px',
+    fontFamily: 'Inter, Arial, sans-serif',
+    letterSpacing: '0.02em',
+    whiteSpace: 'nowrap',
+    display: 'none',
+  });
+  el.chart.appendChild(countdownNode);
 
   candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
     priceLineVisible: false,
@@ -4041,6 +4104,7 @@ async function loadChart() {
     initChart();
     renderComputed(currentCandles, currentDailyCandles, true);
     startLiveStream(activeSource, symbol, interval, limit, activeToken);
+    startCandleCountdownTimer();
 
     refreshTimer = window.setInterval(async () => {
       try {
@@ -4441,3 +4505,4 @@ syncLevelVisibilityControls();
 syncTimeframeButtons();
 syncDrawingToolButtons();
 bootApp();
+startCandleCountdownTimer();
