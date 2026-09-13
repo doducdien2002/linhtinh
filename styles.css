@@ -2,13 +2,33 @@
   box-sizing: border-box;
 }
 
+:root {
+  --bg-page: #e9edf3;
+  --surface: rgba(255, 255, 255, 0.92);
+  --surface-strong: #ffffff;
+  --ink: #0b1220;
+  --muted: #64748b;
+  --line: #d9e2ef;
+  --gold: #d6a10b;
+  --gold-soft: #fff3bf;
+  --green: #08a045;
+  --green-bright: #6aff00;
+  --blue: #229ed9;
+  --red: #ff2d15;
+  --shadow-soft: 0 14px 34px rgba(15, 23, 42, 0.12);
+  --shadow-lift: 0 18px 44px rgba(15, 23, 42, 0.18);
+}
+
 html,
 body {
   width: 100%;
   height: 100%;
   margin: 0;
-  background: #f2f2f2;
-  color: #0b0e11;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.72), transparent 32%),
+    repeating-linear-gradient(135deg, rgba(15, 23, 42, 0.035) 0 1px, transparent 1px 18px),
+    var(--bg-page);
+  color: var(--ink);
   font-family: Inter, Arial, sans-serif;
 }
 
@@ -36,11 +56,11 @@ body.auth-locked .app-shell {
   width: calc(100vw - 16px);
   height: calc(100vh - 16px);
   margin: 8px;
-  background: #f6f8fb;
-  border: 1px solid #dde3ec;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef3f8 100%);
+  border: 1px solid rgba(217, 226, 239, 0.96);
   border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.1);
+  box-shadow: var(--shadow-lift);
 }
 
 .toolbar {
@@ -52,8 +72,11 @@ body.auth-locked .app-shell {
   min-height: 72px;
   padding: 14px 18px;
   background:
-    linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  border-bottom: 1px solid #e2e8f0;
+    linear-gradient(90deg, rgba(214, 161, 11, 0.13), transparent 22%, rgba(8, 160, 69, 0.08)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.94) 100%);
+  border-bottom: 1px solid rgba(217, 226, 239, 0.92);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
+  backdrop-filter: blur(10px);
 }
 
 .symbol-title {
@@ -67,8 +90,8 @@ body.auth-locked .app-shell {
 }
 
 .symbol-title strong {
-  font-weight: 700;
-  text-shadow: none;
+  font-weight: 900;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .coin-mark {
@@ -82,7 +105,7 @@ body.auth-locked .app-shell {
   background:
     radial-gradient(circle at 30% 25%, #fff5b8 0 16%, transparent 17%),
     linear-gradient(135deg, #ffd84a 0%, #d6a10b 48%, #916000 100%);
-  box-shadow: inset 0 -2px 4px rgba(72, 43, 0, 0.32), 0 0 0 3px rgba(218, 165, 32, 0.16);
+  box-shadow: inset 0 -2px 4px rgba(72, 43, 0, 0.32), 0 0 0 3px rgba(218, 165, 32, 0.16), 0 8px 20px rgba(145, 96, 0, 0.22);
 }
 
 .coin-mark::before {
@@ -109,26 +132,27 @@ body.auth-locked .app-shell {
   align-items: center;
   gap: 6px;
   padding: 5px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(217, 226, 239, 0.86);
   border-radius: 10px;
-  background: #ffffff;
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(10px);
 }
 
 .toolbar-token-input {
   height: 32px;
   width: 132px;
   min-width: 0;
-  border: 1px solid #d9e2ef;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: #ffffff;
-  color: #0f172a;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--ink);
   padding: 0 10px;
   font-size: 12px;
   font-weight: 600;
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
   outline: none;
-  transition: border-color 140ms ease, box-shadow 140ms ease;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease, background 140ms ease;
 }
 
 .toolbar-token-input::placeholder {
@@ -137,8 +161,10 @@ body.auth-locked .app-shell {
 }
 
 .toolbar-token-input:focus {
-  border-color: #009900;
-  box-shadow: 0 0 0 3px rgba(0, 153, 0, 0.14);
+  border-color: var(--green);
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(8, 160, 69, 0.14), 0 8px 20px rgba(8, 160, 69, 0.08);
+  transform: translateY(-1px);
 }
 
 .account-actions {
@@ -152,7 +178,7 @@ body.auth-locked .app-shell {
 .account-name {
   max-width: 120px;
   overflow: hidden;
-  color: #111827;
+  color: var(--ink);
   font-size: 12px;
   font-weight: 900;
   text-overflow: ellipsis;
@@ -161,19 +187,23 @@ body.auth-locked .app-shell {
 
 .account-button {
   height: 32px;
-  border: 1px solid #d9e2ef;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: #ffffff;
-  color: #0f172a;
+  background: linear-gradient(180deg, #ffffff, #f5f8fc);
+  color: var(--ink);
   padding: 0 10px;
   font-size: 11px;
   font-weight: 900;
   cursor: pointer;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
 }
 
 .account-button:hover {
   border-color: #94a3b8;
-  background: #f1f5f9;
+  background: #ffffff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+  transform: translateY(-1px);
 }
 
 .timeframe-button,
@@ -186,12 +216,13 @@ body.auth-locked .app-shell {
   min-width: 42px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: #f1f5f9;
-  color: #0f172a;
+  background: linear-gradient(180deg, #f8fafc, #edf2f7);
+  color: var(--ink);
   font: 700 13px/1 Arial, sans-serif;
   cursor: pointer;
   outline: none;
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
 }
 
 .timeframe-button:hover,
@@ -199,18 +230,19 @@ body.auth-locked .app-shell {
 .signal-filter-button:hover,
 .icon-button:hover {
   border-color: #cbd5e1;
-  background: #e2e8f0;
-  color: #0f172a;
+  background: #ffffff;
+  color: var(--ink);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
   transform: translateY(-1px);
 }
 
 .timeframe-button.active,
 .add-toggle-button.active,
 .signal-filter.open .signal-filter-button {
-  border-color: #020617;
-  background: #020617;
+  border-color: rgba(8, 160, 69, 0.95);
+  background: linear-gradient(135deg, #063f24 0%, #08a045 56%, #d6a10b 100%);
   color: #ffffff;
-  box-shadow: 0 6px 14px rgba(2, 6, 23, 0.2);
+  box-shadow: 0 8px 20px rgba(8, 160, 69, 0.26);
 }
 
 .add-toggle-button {
@@ -232,6 +264,8 @@ body.auth-locked .app-shell {
   font-size: 12px;
   font-weight: 800;
   white-space: nowrap;
+  color: #23400f;
+  background: linear-gradient(180deg, #fff9db, #eefbea);
 }
 
 .signal-filter-menu {
@@ -246,10 +280,11 @@ body.auth-locked .app-shell {
   gap: 7px;
   min-width: 168px;
   padding: 10px;
-  border: 1px solid #d8e0eb;
+  border: 1px solid rgba(217, 226, 239, 0.94);
   border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.18);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(12px);
 }
 
 .signal-filter-menu.hidden {
@@ -276,7 +311,7 @@ body.auth-locked .app-shell {
 .icon-button {
   min-width: 34px;
   background: #ffffff;
-  color: #0f172a;
+  color: var(--ink);
   font-size: 19px;
 }
 
@@ -307,10 +342,12 @@ body.auth-locked .app-shell {
   overflow: auto;
   -webkit-overflow-scrolling: touch;
   padding: 12px;
-  border: 1px solid #d8e0eb;
+  border: 1px solid rgba(217, 226, 239, 0.92);
   border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.98));
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(14px);
 }
 
 .control-hidden.hidden {
@@ -321,10 +358,10 @@ body.auth-locked .app-shell {
 .control-hidden select {
   height: 34px;
   min-width: 118px;
-  border: 1px solid #d9e2ef;
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: #ffffff;
-  color: #0f172a;
+  color: var(--ink);
   padding: 0 10px;
   font-size: 13px;
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
@@ -333,8 +370,8 @@ body.auth-locked .app-shell {
 
 .control-hidden input:focus,
 .control-hidden select:focus {
-  border-color: #009900;
-  box-shadow: 0 0 0 3px rgba(0, 153, 0, 0.14);
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(8, 160, 69, 0.14);
 }
 
 #limitSelect,
@@ -348,7 +385,7 @@ body.auth-locked .app-shell {
   height: 34px;
   min-width: min(260px, 22vw);
   overflow: hidden;
-  border: 1px solid #d9e2ef;
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: #ffffff;
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
@@ -359,8 +396,8 @@ body.auth-locked .app-shell {
   place-items: center;
   align-self: stretch;
   padding: 0 9px;
-  background: #eef2f7;
-  color: #334155;
+  background: linear-gradient(180deg, #eef7ef, #dff3e6);
+  color: #14532d;
   font-size: 11px;
   font-weight: 900;
   white-space: nowrap;
@@ -377,8 +414,8 @@ body.auth-locked .app-shell {
 }
 
 .market-feed-control:focus-within {
-  border-color: #009900;
-  box-shadow: 0 0 0 3px rgba(0, 153, 0, 0.14);
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(8, 160, 69, 0.14);
 }
 
 .op-adjust-control {
@@ -387,7 +424,7 @@ body.auth-locked .app-shell {
   height: 34px;
   min-width: 146px;
   overflow: hidden;
-  border: 1px solid #d9e2ef;
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: #ffffff;
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
@@ -398,7 +435,7 @@ body.auth-locked .app-shell {
   place-items: center;
   align-self: stretch;
   padding: 0 9px;
-  background: #009900;
+  background: linear-gradient(135deg, #047336, #08a045);
   color: #ffffff;
   font-size: 11px;
   font-weight: 900;
@@ -421,8 +458,8 @@ body.auth-locked .app-shell {
 }
 
 .op-adjust-control:focus-within {
-  border-color: #009900;
-  box-shadow: 0 0 0 3px rgba(0, 153, 0, 0.14);
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(8, 160, 69, 0.14);
 }
 
 .op-reset-button {
@@ -430,7 +467,7 @@ body.auth-locked .app-shell {
   place-items: center;
   width: 34px;
   height: 34px;
-  border: 1px solid #d9e2ef;
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: #ffffff;
   color: #0f172a;
@@ -445,10 +482,10 @@ body.auth-locked .app-shell {
 }
 
 .settings-toggle-button.active {
-  border-color: #009900;
-  background: #009900;
+  border-color: var(--green);
+  background: linear-gradient(135deg, #047336, #08a045);
   color: #ffffff;
-  box-shadow: 0 6px 14px rgba(0, 153, 0, 0.22);
+  box-shadow: 0 8px 20px rgba(8, 160, 69, 0.22);
 }
 
 .level-visibility-control {
@@ -461,7 +498,7 @@ body.auth-locked .app-shell {
   padding: 9px;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  background: #f8fafc;
+  background: linear-gradient(180deg, #f8fafc, #f1f5f9);
 }
 
 .level-visibility-control > span {
@@ -470,7 +507,7 @@ body.auth-locked .app-shell {
   min-height: 27px;
   padding: 0 9px;
   border-radius: 6px;
-  background: #009900;
+  background: linear-gradient(135deg, #047336, #08a045);
   color: #ffffff;
   font-size: 11px;
   font-weight: 900;
@@ -490,7 +527,7 @@ body.auth-locked .app-shell {
   gap: 5px;
   min-height: 27px;
   padding: 0 8px;
-  border: 1px solid #d9e2ef;
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: #ffffff;
   color: #0f172a;
@@ -522,10 +559,13 @@ select {
   min-height: 0;
   margin: 0 18px 18px;
   overflow: hidden;
-  border: 1px solid rgba(79, 255, 158, 0.16);
-  border-radius: 8px;
-  background: #ffffff;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03), 0 18px 40px rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(8, 160, 69, 0.22);
+  border-radius: 10px;
+  background: #0b101a;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 18px 42px rgba(2, 6, 23, 0.28),
+    0 0 0 1px rgba(214, 161, 11, 0.08);
 }
 
 #chart {
@@ -533,69 +573,8 @@ select {
   top: 0;
   right: 0;
   bottom: 0;
-  left: 46px;
-  background: #111722;
-}
-
-.draw-toolbar {
-  position: absolute;
-  top: 0;
   left: 0;
-  bottom: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 7px;
-  width: 46px;
-  padding: 7px 5px;
-  border-right: 1px solid #d7dde7;
-  background: #ffffff;
-  box-shadow: 4px 0 12px rgba(15, 23, 42, 0.08);
-}
-
-.draw-toolbar::after {
-  content: "";
-  width: 26px;
-  height: 1px;
-  margin: 4px 0;
-  background: #e5e7eb;
-}
-
-.draw-tool-button {
-  display: inline-grid;
-  place-items: center;
-  width: 31px;
-  height: 31px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: #ffffff;
-  color: #111827;
-  font: 900 16px/1 Arial, sans-serif;
-  cursor: pointer;
-  outline: none;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
-}
-
-.draw-tool-button:hover {
-  border-color: #cbd5e1;
-  background: #f1f5f9;
-}
-
-.draw-tool-button.active {
-  border-color: #c48a00;
-  background: #fff7d6;
-  color: #4b3100;
-  box-shadow: inset 0 0 0 1px rgba(196, 138, 0, 0.18);
-}
-
-.draw-tool-button[disabled] {
-  cursor: not-allowed;
-  opacity: 0.38;
-}
-
-.draw-tool-danger {
-  margin-top: auto;
+  background: #111722;
 }
 
 .marker-layer {
@@ -697,7 +676,7 @@ select {
   height: 13px;
   border: 1px solid #0b0e11;
   transform: translate(-50%, -50%) rotate(45deg);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.24), 0 0 14px rgba(103, 246, 255, 0.22);
 }
 
 .diamond-buy {
@@ -749,6 +728,7 @@ select {
   text-shadow: 0 1px 1px #000000, 0 0 5px rgba(106, 255, 0, 0.65);
   transform: translate(-50%, -50%);
   pointer-events: none;
+  animation: markerPop 220ms ease-out;
 }
 
 .buy-arrow-marker::before {
@@ -758,7 +738,7 @@ select {
   border-left: 8px solid transparent;
   border-right: 8px solid transparent;
   border-bottom: 18px solid #6aff00;
-  filter: drop-shadow(0 1px 1px #000000) drop-shadow(0 0 4px rgba(106, 255, 0, 0.55));
+  filter: drop-shadow(0 1px 1px #000000) drop-shadow(0 0 8px rgba(106, 255, 0, 0.72));
 }
 
 .sell-arrow-marker {
@@ -777,6 +757,7 @@ select {
   text-shadow: 0 1px 1px #000000, 0 0 5px rgba(255, 45, 21, 0.65);
   transform: translate(-50%, -50%);
   pointer-events: none;
+  animation: markerPop 220ms ease-out;
 }
 
 .sell-arrow-marker::before {
@@ -786,7 +767,18 @@ select {
   border-left: 8px solid transparent;
   border-right: 8px solid transparent;
   border-top: 18px solid #ff2d15;
-  filter: drop-shadow(0 1px 1px #000000) drop-shadow(0 0 4px rgba(255, 45, 21, 0.55));
+  filter: drop-shadow(0 1px 1px #000000) drop-shadow(0 0 8px rgba(255, 45, 21, 0.72));
+}
+
+@keyframes markerPop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
 }
 
 .watermark {
@@ -859,15 +851,16 @@ select {
   bottom: 7px;
   z-index: 7;
   max-width: min(60vw, 560px);
-  padding: 4px 7px;
-  border: 1px solid rgba(34, 230, 111, 0.2);
-  border-radius: 4px;
-  background: rgba(2, 6, 23, 0.76);
+  padding: 5px 9px;
+  border: 1px solid rgba(106, 255, 0, 0.22);
+  border-radius: 7px;
+  background: rgba(2, 6, 23, 0.82);
   color: #e5e7eb;
   font-size: 11px;
   font-weight: 700;
   pointer-events: none;
   opacity: 1;
+  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .signal-notice {
@@ -878,14 +871,15 @@ select {
   width: min(360px, calc(100% - 24px));
   max-height: min(68vh, 520px);
   overflow: auto;
-  border: 1px solid rgba(79, 255, 158, 0.2);
-  border-left: 5px solid #009900;
+  border: 1px solid rgba(79, 255, 158, 0.22);
+  border-left: 5px solid var(--green);
   border-radius: 8px;
-  background: rgba(4, 10, 16, 0.92);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42), 0 0 22px rgba(34, 230, 111, 0.08);
+  background:
+    linear-gradient(180deg, rgba(8, 16, 28, 0.96), rgba(2, 6, 23, 0.94));
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42), 0 0 24px rgba(34, 230, 111, 0.11);
   color: #f4f7fb;
   backdrop-filter: blur(10px);
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition: opacity 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
 .signal-notice.signal-collapsed {
@@ -903,11 +897,13 @@ select {
 }
 
 .signal-notice.signal-buy {
-  border-left-color: #6aff00;
+  border-left-color: var(--green-bright);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42), 0 0 28px rgba(106, 255, 0, 0.16);
 }
 
 .signal-notice.signal-sell {
-  border-left-color: #ff2d15;
+  border-left-color: var(--red);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42), 0 0 28px rgba(255, 45, 21, 0.16);
 }
 
 .signal-head {
@@ -917,6 +913,7 @@ select {
   gap: 10px;
   padding: 10px 12px 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.08), transparent);
   cursor: move;
   touch-action: none;
 }
@@ -951,6 +948,7 @@ select {
   font-size: 11px;
   font-weight: 900;
   cursor: pointer;
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 
 .hide-signal-button {
@@ -959,8 +957,16 @@ select {
 }
 
 .send-telegram-button {
-  background: #229ed9;
+  border-color: rgba(34, 158, 217, 0.88);
+  background: linear-gradient(135deg, #229ed9, #126ca1);
   color: #ffffff;
+  box-shadow: 0 7px 18px rgba(34, 158, 217, 0.28);
+}
+
+.copy-signal-button {
+  border-color: rgba(214, 161, 11, 0.56);
+  background: linear-gradient(180deg, #fff7d6, #f3d676);
+  color: #4b3100;
 }
 
 .copy-signal-button:hover,
@@ -968,7 +974,9 @@ select {
 .hide-signal-button:hover,
 .signal-toggle-button:hover {
   background: #ffffff;
-  color: #111827;
+  color: var(--ink);
+  box-shadow: 0 8px 18px rgba(255, 255, 255, 0.12);
+  transform: translateY(-1px);
 }
 
 .signal-toggle-button {
@@ -978,15 +986,15 @@ select {
   gap: 7px;
   min-width: 92px;
   height: 32px;
-  border-color: #d9e2ef;
+  border-color: var(--line);
   border-radius: 8px;
-  background: #ffffff;
-  color: #0f172a;
+  background: linear-gradient(180deg, #ffffff, #f5f8fc);
+  color: var(--ink);
   padding: 0 10px;
   font-size: 11px;
   line-height: 1;
   white-space: nowrap;
-  box-shadow: none;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
 }
 
 .signal-toggle-button::before {
@@ -1011,8 +1019,9 @@ select {
 
 .signal-toggle-button.signal-panel-open {
   border-color: #020617;
-  background: #020617;
+  background: linear-gradient(135deg, #020617, #0f2c1b);
   color: #ffffff;
+  box-shadow: 0 8px 18px rgba(2, 6, 23, 0.2);
 }
 
 .signal-toggle-button.signal-panel-open::before {
@@ -1476,10 +1485,6 @@ select {
     right: 0;
   }
 
-  .draw-toolbar {
-    display: none;
-  }
-
   .chart-actions {
     flex: 0 0 auto;
     flex-wrap: nowrap;
@@ -1525,7 +1530,7 @@ select {
   }
 
   .watermark::after {
-    left: 46px;
+    left: 12px;
     bottom: 16px;
     font-size: 18px;
   }
@@ -1776,16 +1781,6 @@ select {
     min-width: 0;
     padding: 0 9px;
     font-size: 11px;
-  }
-
-  .draw-toolbar {
-    width: 34px;
-  }
-
-  .draw-tool-button {
-    width: 29px;
-    height: 29px;
-    font-size: 13px;
   }
 
   .pane-label {

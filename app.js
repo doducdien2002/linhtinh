@@ -171,6 +171,9 @@ let blinkOn = true;
 let blinkTimer;
 let currentBarSpacing = 5;
 let latestSignalId = '';
+let latestAutoTelegramSignalId = '';
+let autoTelegramSignalInFlightId = '';
+const telegramSignalActivationPromises = new Map();
 let latestSignalCopy = '';
 let latestSignalTelegram = null;
 let telegramSignalStates = [];
@@ -178,6 +181,7 @@ let telegramPriceCheckRunning = false;
 let telegramQueuedPrice = null;
 let telegramRetryTimer = null;
 let signalDetectionReady = false;
+let telegramSignalRestorePromise = null;
 let signalNoticeCollapsed = false;
 let signalNoticeDragState = null;
 let twelveDataStreamPollMs = 60_000;
@@ -212,7 +216,10 @@ async function syncTelegramSignalStatesToFirebase(signals = telegramSignalStates
   if (!authState.sessionId || !Array.isArray(signals) || !signals.length) return;
 
   try {
-    await authPost('/api/signals/sync', { sessionId: authState.sessionId, signals });
+    await authPost('/api/signals/sync', {
+      sessionId: authState.sessionId,
+      signals,
+    });
     firebaseSignalSyncErrorShown = false;
   } catch (error) {
     console.warn('Firebase server sync failed:', error);
@@ -234,6 +241,12 @@ function scheduleFirebaseSignalSync(signals = telegramSignalStates) {
 async function restoreTelegramSignalStatesFromFirebase() {
   if (!authState.sessionId) return;
 
+  if (telegramSignalRestorePromise) {
+    await telegramSignalRestorePromise;
+    return;
+  }
+
+  telegramSignalRestorePromise = (async () => {
   try {
     const data = await authPost('/api/signals/open', { sessionId: authState.sessionId });
     const restored = (Array.isArray(data.signals) ? data.signals : [])
@@ -247,7 +260,12 @@ async function restoreTelegramSignalStatesFromFirebase() {
     saveTelegramSignalStates();
   } catch (error) {
     console.warn('Firebase signal restore failed:', error);
+  } finally {
+    telegramSignalRestorePromise = null;
   }
+  })();
+
+  await telegramSignalRestorePromise;
 }
 
 const ADD_SIGNAL_TP_MIN_MOVE = 10;
@@ -255,7 +273,10 @@ const ADD_SIGNAL_TP_MAX_MOVE = 10;
 const TELEGRAM_AUTO_INTERVAL = '5m';
 const TELEGRAM_SIGNAL_STORAGE_KEY = 'craziiTelegramOpenSignals';
 const TELEGRAM_SIGNAL_MAX_OPEN = 10;
-const TRADE_SL_MOVE = 10;
+const TELEGRAM_TP_ORDER = ['TP1', 'TP2', 'TP3'];
+const TRADE_ENTRY_RANGE_MOVE = 4;
+const TRADE_SL_BUFFER_MOVE = 7;
+const TRADE_SL_MOVE = TRADE_ENTRY_RANGE_MOVE + TRADE_SL_BUFFER_MOVE;
 const TRADE_TP_MIN_MOVE = 5;
 const TRADE_TP_MAX_MOVE = 15;
 const PRICE_LEVEL_STORAGE_KEY = 'craziiHiddenPriceLevels';
@@ -3096,15 +3117,58 @@ function formatPriceMove(value) {
   return `${number.toFixed(2)} giá`;
 }
 
-function nextTelegramSignalNumber() {
-  try {
-    const current = Number(window.localStorage.getItem('telegramSignalNumber') || '0');
-    const next = Number.isFinite(current) ? current + 1 : 1;
-    window.localStorage.setItem('telegramSignalNumber', String(next));
-    return next;
-  } catch (error) {
-    return Math.floor(Date.now() / 1000);
+function formatTradePrice(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '--';
+  return number.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
+}
+
+function formatEntryRange(signal) {
+  if (signal.entryText) return String(signal.entryText);
+  const entryLow = Number(signal.entryLow);
+  const entryHigh = Number(signal.entryHigh);
+  if (Number.isFinite(entryLow) && Number.isFinite(entryHigh)) {
+    return signal.isBuy
+      ? `${formatTradePrice(Math.max(entryLow, entryHigh))} - ${formatTradePrice(Math.min(entryLow, entryHigh))}`
+      : `${formatTradePrice(Math.min(entryLow, entryHigh))} - ${formatTradePrice(Math.max(entryLow, entryHigh))}`;
   }
+  return formatTradePrice(signal.entry);
+}
+
+function tradeLevelsFromEntry(entry, isBuy) {
+  const base = Number(entry);
+  if (!Number.isFinite(base)) return null;
+
+  const entryLow = isBuy ? base - TRADE_ENTRY_RANGE_MOVE : base;
+  const entryHigh = isBuy ? base : base + TRADE_ENTRY_RANGE_MOVE;
+  const targetBase = isBuy ? entryHigh : entryLow;
+  return {
+    entryLow,
+    entryHigh,
+    entryText: isBuy
+      ? `${formatTradePrice(entryHigh)} - ${formatTradePrice(entryLow)}`
+      : `${formatTradePrice(entryLow)} - ${formatTradePrice(entryHigh)}`,
+    sl: isBuy ? entryLow - TRADE_SL_BUFFER_MOVE : entryHigh + TRADE_SL_BUFFER_MOVE,
+    tp1: isBuy ? targetBase + TRADE_TP_MIN_MOVE : targetBase - TRADE_TP_MIN_MOVE,
+    tp2: isBuy ? targetBase + 10 : targetBase - 10,
+    tp3: isBuy ? targetBase + TRADE_TP_MAX_MOVE : targetBase - TRADE_TP_MAX_MOVE,
+  };
+}
+
+async function reserveTelegramSignalNumberFromFirebase() {
+  if (!authState.sessionId) throw new Error('Cần đăng nhập để lấy STT kèo từ Firebase.');
+
+  const data = await authPost('/api/signals/next-number', { sessionId: authState.sessionId });
+  const number = Number(data.number);
+  if (!Number.isFinite(number) || number <= 0) {
+    throw new Error('Firebase không trả về STT kèo hợp lệ.');
+  }
+
+  return {
+    number: Math.floor(number),
+    signalDate: String(data.dateKey || ''),
+    signalNumberTimeZone: String(data.timeZone || ''),
+  };
 }
 
 function telegramProfitLine(signal, price, isWin) {
@@ -3142,22 +3206,18 @@ function saveTelegramSignalStates() {
 function formatTradeSignalMessage(signal) {
   const direction = signal.isBuy ? 'BUY' : 'SELL';
   const tradeLabel = signal.number ? `[KÈO ${signal.number}] ` : '';
-  const trend = signal.isBuy ? 'Xu hướng Tăng' : 'Xu hướng Giảm';
-  const icon = signal.isBuy ? '🟢' : '🔴';
-  const vietnameseSide = signal.isBuy ? 'mua' : 'bán';
   return [
     `⚡️ ${tradeLabel}${direction}`,
-    trend,
-    `${icon} Có thể cân nhắc ${direction} (${vietnameseSide}):  ${formatPrice(signal.entry)}`,
-    `📌 Quản trị rủi ro:`,
-    `→ Cắt lỗ: ${formatPrice(signal.sl)} ( ${TRADE_SL_MOVE} giá )`,
-    `→ TP1: ${formatPrice(signal.tp1)} ( ${TRADE_TP_MIN_MOVE} giá từ entry )`,
-    `→ TP2: ${formatPrice(signal.tp2)} ( 10 giá từ entry )`,
-    `→ TP3: ${formatPrice(signal.tp3)} ( ${TRADE_TP_MAX_MOVE} giá từ entry )`,
     ``,
-    `⚠️ Lưu ý:`,
-    `Đây là góc nhìn cá nhân, không phải khuyến nghị đầu tư.`,
-    `Anh/chị tự chịu trách nhiệm với quyết định giao dịch.`,
+    `Entry : ${formatEntryRange(signal)}`,
+    ``,
+    `SL : ${formatTradePrice(signal.sl)} ⚔️`,
+    ``,
+    `TP 1 : ${formatTradePrice(signal.tp1)} 🍀🍀`,
+    ``,
+    `TP 2 : ${formatTradePrice(signal.tp2)} 🍀🍀`,
+    ``,
+    `TP 3 : ${formatTradePrice(signal.tp3)} 🍀🍀`,
   ].join('\n');
 }
 function formatTelegramOpenMessage(signal) {
@@ -3169,9 +3229,9 @@ function formatTelegramConfluenceMessage(signal) {
     `⭐ [ Kèo ${signal.number} ] Hợp lưu OP/KTR`,
     `${signal.isBuy ? '✅ BUY đẹp' : '✅ SELL đẹp'}`,
     `Lý do: ${signal.confluence.reason}`,
-    `Entry: ${formatPrice(signal.entry)} (Market)`,
-    `SL: ${formatPrice(signal.sl)}`,
-    `TP: ${formatPrice(signal.tp1)}`,
+    `Entry: ${formatEntryRange(signal)}`,
+    `SL: ${formatTradePrice(signal.sl)} ⚔️`,
+    `TP: ${formatTradePrice(signal.tp1)}`,
   ].join('\n');
 }
 
@@ -3185,12 +3245,12 @@ function formatTelegramCloseMessage(signal, result, price) {
   const followUp = resultText === 'TP1'
     ? [
       targetProfit,
-      `🔒 Cân nhắc chốt một phần hoặc kéo cắt lỗ về điểm vào: ${formatPrice(signal.entry)}`,
+      `🔒 Cân nhắc chốt một phần hoặc kéo cắt lỗ về vùng entry: ${formatEntryRange(signal)}`,
     ].join('\n')
     : resultText === 'TP2'
       ? [
         targetProfit,
-        `📍 Cân nhắc chốt thêm một phần, phần còn lại quan sát TP3: ${formatPrice(signal.tp3)}`,
+        `📍 Cân nhắc chốt thêm một phần, phần còn lại quan sát TP3: ${formatTradePrice(signal.tp3)}`,
       ].join('\n')
       : resultText === 'TP3'
         ? [targetProfit, '🏁 Hoàn tất đủ 3 mục tiêu chốt lãi.'].join('\n')
@@ -3202,11 +3262,11 @@ function formatTelegramCloseMessage(signal, result, price) {
   return [
     `${statusIcon} KÈO ${signal.number} ${signal.side} ${statusText}`,
     `Mã: ${signal.symbol || el.symbol.value.trim().toUpperCase()} | Khung: ${formatIntervalLabel(signal.interval)}`,
-    `Entry: ${formatPrice(signal.entry)}`,
+    `Entry: ${formatEntryRange(signal)}`,
     `Thời gian mở: ${formatTelegramTime(signal.time)}`,
     `Thời gian đóng: ${formatTelegramTime()}`,
-    `${isWin ? resultText : isBreakEven ? 'Hòa vốn' : 'SL'}: ${formatPrice(targetPrice)}`,
-    `Giá hiện tại: ${formatPrice(price)}`,
+    `${isWin ? resultText : isBreakEven ? 'Hòa vốn' : 'SL'}: ${formatTradePrice(targetPrice)}`,
+    `Giá hiện tại: ${formatTradePrice(price)}`,
     isWin || isBreakEven ? '' : telegramProfitLine(signal, price, isWin),
     followUp,
   ].filter(Boolean).join('\n');
@@ -3230,7 +3290,7 @@ async function sendTelegramMessage(text, deliveryId = '') {
     el.status.textContent = data.deduplicated
       ? 'Telegram: thông báo này đã được gửi trước đó.'
       : `Đã gửi Telegram ${new Date().toLocaleTimeString()}`;
-    return true;
+    return data.deduplicated ? 'deduplicated' : true;
   } catch (error) {
     console.warn(error);
     el.status.textContent = `Telegram lỗi: ${error.message}`;
@@ -3238,12 +3298,18 @@ async function sendTelegramMessage(text, deliveryId = '') {
   }
 }
 
-async function activateTelegramSignal(signal, levels) {
+async function doActivateTelegramSignal(signal, levels) {
+  if (signal?.confirmed === false) {
+    el.status.textContent = 'Chờ nến đóng để xác nhận mũi tên rồi mới bắn Telegram.';
+    return false;
+  }
+
   telegramSignalStates = loadTelegramSignalStates();
+  await restoreTelegramSignalStatesFromFirebase();
   const existingSignal = telegramSignalStates.find((item) => item.id === signal.id && !item.closed);
   if (existingSignal) {
     await checkTelegramSignalPrice(levels.price);
-    return;
+    return true;
   }
   await checkTelegramSignalPrice(levels.price);
 
@@ -3251,13 +3317,23 @@ async function activateTelegramSignal(signal, levels) {
   if (openSignals.length >= TELEGRAM_SIGNAL_MAX_OPEN) {
     el.status.textContent = `Đang có ${TELEGRAM_SIGNAL_MAX_OPEN} kèo ${formatIntervalLabel(TELEGRAM_AUTO_INTERVAL)} mở, tạm dừng bắn kèo mới.`;
     saveTelegramSignalStates();
-    return;
+    return false;
   }
 
-  const number = nextTelegramSignalNumber();
+  let reservedNumber;
+  try {
+    reservedNumber = await reserveTelegramSignalNumberFromFirebase();
+  } catch (error) {
+    console.warn(error);
+    el.status.textContent = `Không lấy được STT kèo từ Firebase: ${error.message}`;
+    return false;
+  }
+
   const nextSignalState = {
     ...signal,
-    number,
+    number: reservedNumber.number,
+    signalDate: reservedNumber.signalDate,
+    signalNumberTimeZone: reservedNumber.signalNumberTimeZone,
     symbol: el.symbol.value.trim().toUpperCase(),
     interval: levels.interval,
     originalSl: signal.sl,
@@ -3269,7 +3345,8 @@ async function activateTelegramSignal(signal, levels) {
     formatTelegramOpenMessage(nextSignalState),
     `open:${nextSignalState.id}`,
   );
-  if (!sent) return;
+  if (sent === 'deduplicated') return true;
+  if (!sent) return false;
   telegramSignalStates = [
     ...openSignals,
     nextSignalState,
@@ -3277,14 +3354,46 @@ async function activateTelegramSignal(signal, levels) {
   saveTelegramSignalStates();
   await syncTelegramSignalStatesToFirebase(telegramSignalStates);
   checkTelegramSignalPrice(levels.price);
+  return true;
 }
 
-function telegramTargetLevels(signal) {
-  return [
-    { key: 'tp1', name: 'TP1', price: Number(signal.tp1) },
-    { key: 'tp2', name: 'TP2', price: Number(signal.tp2) },
-    { key: 'tp3', name: 'TP3', price: Number(signal.tp3) },
-  ].filter((target) => Number.isFinite(target.price));
+async function activateTelegramSignal(signal, levels) {
+  const signalId = String(signal?.id || '');
+  if (!signalId) return false;
+
+  const existingPromise = telegramSignalActivationPromises.get(signalId);
+  if (existingPromise) return existingPromise;
+
+  const promise = doActivateTelegramSignal(signal, levels)
+    .finally(() => {
+      telegramSignalActivationPromises.delete(signalId);
+    });
+  telegramSignalActivationPromises.set(signalId, promise);
+  return promise;
+}
+
+function normalizeTelegramTpHits(tpHits) {
+  const hitNames = new Set(
+    (Array.isArray(tpHits) ? tpHits : [])
+      .map((item) => String(item || '').toUpperCase())
+      .filter((item) => TELEGRAM_TP_ORDER.includes(item)),
+  );
+  const orderedHits = [];
+  for (const name of TELEGRAM_TP_ORDER) {
+    if (!hitNames.has(name)) break;
+    orderedHits.push(name);
+  }
+  return orderedHits;
+}
+
+function nextPendingTelegramTarget(signal) {
+  signal.tpHits = normalizeTelegramTpHits(signal.tpHits);
+  const nextName = TELEGRAM_TP_ORDER[signal.tpHits.length];
+  if (!nextName) return null;
+
+  const key = nextName.toLowerCase();
+  const price = Number(signal[key]);
+  return Number.isFinite(price) ? { key, name: nextName, price } : null;
 }
 
 function scheduleTelegramPriceRetry(price) {
@@ -3323,28 +3432,24 @@ async function checkTelegramSignalPrice(price) {
       let changed = false;
       for (const signal of telegramSignalStates) {
         if (!signal || signal.closed) continue;
-        signal.tpHits = Array.isArray(signal.tpHits) ? signal.tpHits : [];
+        signal.tpHits = normalizeTelegramTpHits(signal.tpHits);
 
         const hitSl = signal.isBuy ? currentPrice <= Number(signal.sl) : currentPrice >= Number(signal.sl);
         if (hitSl) {
           const isBreakEven = signal.breakEvenMoved && Math.abs(Number(signal.sl) - Number(signal.entry)) < 0.000001;
-          const result = isBreakEven ? 'BE' : 'SL';
-          const sent = await notifyTelegramTradeResult(signal, result, currentPrice);
-          if (!sent) continue;
-
           signal.closed = true;
           signal.closedAt = Date.now();
+          signal.closeResult = isBreakEven ? 'BE' : 'SL';
           changed = true;
           continue;
         }
 
-        for (const target of telegramTargetLevels(signal)) {
-          if (signal.tpHits.includes(target.name)) continue;
+        const target = nextPendingTelegramTarget(signal);
+        if (target) {
           const hitTp = signal.isBuy ? currentPrice >= target.price : currentPrice <= target.price;
           if (!hitTp) continue;
-
           const sent = await notifyTelegramTradeResult(signal, target.name, currentPrice);
-          if (!sent) break;
+          if (!sent) continue;
 
           signal.tpHits.push(target.name);
           if (target.name === 'TP1') {
@@ -3355,6 +3460,7 @@ async function checkTelegramSignalPrice(price) {
           if (target.name === 'TP3') {
             signal.closed = true;
             signal.closedAt = Date.now();
+            signal.closeResult = 'TP3';
           }
           changed = true;
         }
@@ -3493,16 +3599,15 @@ function buildTradeSignal(candles, markers, levels) {
   const strategyLabel = tradeMarker.strategyLabel || 'KSI';
   const markerEntry = Number(tradeMarker.entry);
   const entry = Number.isFinite(markerEntry) ? markerEntry : candle.close;
-  const sl = isBuy ? entry - TRADE_SL_MOVE : entry + TRADE_SL_MOVE;
-  const tp1 = isBuy ? entry + TRADE_TP_MIN_MOVE : entry - TRADE_TP_MIN_MOVE;
-  const tp2 = isBuy ? entry + 10 : entry - 10;
-  const tp3 = isBuy ? entry + TRADE_TP_MAX_MOVE : entry - TRADE_TP_MAX_MOVE;
+  const tradeLevels = tradeLevelsFromEntry(entry, isBuy);
+  if (!tradeLevels) return null;
+  const { entryLow, entryHigh, entryText, sl, tp1, tp2, tp3 } = tradeLevels;
   const risk = Math.abs(entry - sl);
   const near = nearestLevel(levels);
   const diamondLineNote = Number.isFinite(Number(tradeMarker.diamondLinePrice))
     ? `→ DL Kim Cương mới nhất: ${formatPrice(tradeMarker.diamondLinePrice)}${tradeMarker.diamondStackCount >= 3 ? ` | Tích lũy ${tradeMarker.diamondStackCount} kim cương` : ''}`
     : '';
-  const entryZone = entryZoneText(entry, isBuy);
+  const entryZone = entryText;
   const invalidationNote = isBuy
     ? 'Sai kịch bản nếu giá phá xuống dưới vùng SL.'
     : 'Sai kịch bản nếu giá phá lên trên vùng SL.';
@@ -3516,7 +3621,11 @@ function buildTradeSignal(candles, markers, levels) {
     strategy,
     strategyLabel,
     isBuy,
+    confirmed: tradeMarker.index < candles.length - 1,
     entry,
+    entryLow,
+    entryHigh,
+    entryText,
     sl,
     tp1,
     tp2,
@@ -3529,6 +3638,12 @@ function buildTradeSignal(candles, markers, levels) {
   };
   signal.copy = formatTradeSignalMessage(signal);
   return signal;
+}
+
+function isSignalOnClosedCandle(signal, candles) {
+  if (signal?.confirmed === false) return false;
+  const index = Number(signal?.index);
+  return Number.isInteger(index) && index >= 0 && index < candles.length - 1;
 }
 
 function syncSignalToggle(hasSignal) {
@@ -3569,6 +3684,8 @@ function renderSignalNotice(candles, markers, levels) {
     latestSignalCopy = '';
     latestSignalTelegram = null;
     latestSignalId = '';
+    latestAutoTelegramSignalId = '';
+    autoTelegramSignalInFlightId = '';
     signalDetectionReady = true;
     syncSignalToggle(false);
     return;
@@ -3576,6 +3693,12 @@ function renderSignalNotice(candles, markers, levels) {
 
   const isNewSignal = signalDetectionReady && latestSignalId !== signal.id;
   const isAutoTelegramInterval = levels.interval === TELEGRAM_AUTO_INTERVAL;
+  const canAutoSendSignal = isAutoTelegramInterval && isSignalOnClosedCandle(signal, candles);
+  const shouldAutoSendSignal = signalDetectionReady
+    && !suppressAutoSend
+    && canAutoSendSignal
+    && latestAutoTelegramSignalId !== signal.id
+    && autoTelegramSignalInFlightId !== signal.id;
   latestSignalId = signal.id;
   latestSignalCopy = signal.copy;
   latestSignalTelegram = { signal, levels };
@@ -3595,9 +3718,20 @@ function renderSignalNotice(candles, markers, levels) {
     syncSignalToggle(true);
     el.signalNotice.classList.add('signal-pulse');
     window.setTimeout(() => el.signalNotice?.classList.remove('signal-pulse'), 1800);
-    if (isAutoTelegramInterval) {
-      activateTelegramSignal(signal, levels);
-    }
+  }
+
+  if (shouldAutoSendSignal) {
+    autoTelegramSignalInFlightId = signal.id;
+    activateTelegramSignal(signal, levels)
+      .then((opened) => {
+        if (opened) latestAutoTelegramSignalId = signal.id;
+      })
+      .catch((error) => {
+        console.warn(error);
+      })
+      .finally(() => {
+        if (autoTelegramSignalInFlightId === signal.id) autoTelegramSignalInFlightId = '';
+      });
   }
 
   checkTelegramSignalPrice(levels.price);
@@ -4083,6 +4217,8 @@ async function loadChart() {
   closeLiveSocket();
   window.clearInterval(refreshTimer);
   latestSignalId = '';
+  latestAutoTelegramSignalId = '';
+  autoTelegramSignalInFlightId = '';
   latestSignalCopy = '';
   latestSignalTelegram = null;
   telegramSignalStates = [];
@@ -4200,6 +4336,8 @@ function clearHiddenSignalNotice() {
     latestSignalCopy = '';
     latestSignalTelegram = null;
     latestSignalId = '';
+    latestAutoTelegramSignalId = '';
+    autoTelegramSignalInFlightId = '';
     syncSignalToggle(false);
   }
   telegramSignalStates = telegramSignalStates.filter((signal) => visibleStrategy(signal.strategy));

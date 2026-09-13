@@ -32,6 +32,8 @@ const deviceWriteIntervalMs = Number(process.env.DEVICE_WRITE_INTERVAL_MS || 300
 const realtimePricePollMs = Math.max(Number(process.env.REALTIME_PRICE_POLL_MS || 60_000), 2_000);
 const priceCacheTtlMs = Math.max(Number(process.env.PRICE_CACHE_TTL_MS || realtimePricePollMs - 1000), 5_000);
 const signalMonitorIntervalMs = Math.max(Number(process.env.SIGNAL_MONITOR_MS || 60_000), 10_000);
+const telegramTpOrder = ['TP1', 'TP2', 'TP3'];
+const signalNumberTimeZone = process.env.SIGNAL_NUMBER_TIME_ZONE || 'Asia/Ho_Chi_Minh';
 const apiLimitCooldownMs = Math.max(Number(process.env.TWELVEDATA_LIMIT_COOLDOWN_MS || 60 * 60_000), 60_000);
 const proxyDailyCacheTtlMs = Math.max(Number(process.env.PROXY_DAILY_CACHE_TTL_MS || 15 * 60_000), 60_000);
 const marketApiKeys = [
@@ -101,25 +103,69 @@ function readTelegramConfig() {
   }
 }
 
+function firebaseConfigError() {
+  return 'Firebase server is not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON, FIREBASE_SERVICE_ACCOUNT_BASE64, GOOGLE_APPLICATION_CREDENTIALS, firebase.service-account.json, or FIREBASE_PROJECT_ID/FIREBASE_CLIENT_EMAIL/FIREBASE_PRIVATE_KEY.';
+}
+
+function readFirebaseServiceAccount() {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    return JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  }
+
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
+    const decoded = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
+    return JSON.parse(decoded);
+  }
+
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
+    return JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf8'));
+  }
+
+  if (fs.existsSync(firebaseServiceAccountPath)) {
+    return JSON.parse(fs.readFileSync(firebaseServiceAccountPath, 'utf8'));
+  }
+
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+  if (projectId && clientEmail && privateKey) {
+    return {
+      project_id: projectId,
+      client_email: clientEmail,
+      private_key: privateKey.replace(/\\n/g, '\n'),
+    };
+  }
+
+  return null;
+}
+
 function getFirestore() {
   if (firestore) return firestore;
 
   try {
     const admin = require('firebase-admin');
-    if (!admin.apps.length) {
-      let serviceAccount = null;
-      if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-      } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
-        serviceAccount = JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf8'));
-      } else if (fs.existsSync(firebaseServiceAccountPath)) {
-        serviceAccount = JSON.parse(fs.readFileSync(firebaseServiceAccountPath, 'utf8'));
-      }
+    const getApps = typeof admin.getApps === 'function'
+      ? admin.getApps
+      : () => (Array.isArray(admin.apps) ? admin.apps : []);
 
-      if (!serviceAccount) return null;
-      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    if (!getApps().length) {
+      const serviceAccount = readFirebaseServiceAccount();
+      if (!serviceAccount) {
+        if (!firestoreInitErrorShown) {
+          console.error(firebaseConfigError());
+          firestoreInitErrorShown = true;
+        }
+        return null;
+      }
+      const cert = admin.credential?.cert
+        ? admin.credential.cert(serviceAccount)
+        : admin.cert(serviceAccount);
+      admin.initializeApp({ credential: cert });
     }
-    firestore = admin.firestore();
+
+    firestore = typeof admin.firestore === 'function'
+      ? admin.firestore()
+      : require('firebase-admin/firestore').getFirestore();
     return firestore;
   } catch (error) {
     if (!firestoreInitErrorShown) {
@@ -132,7 +178,7 @@ function getFirestore() {
 
 function requireFirestore() {
   const db = getFirestore();
-  if (!db) throw sessionError(503, 'Firebase server is not configured.');
+  if (!db) throw sessionError(503, firebaseConfigError(), 'firebase_required');
   return db;
 }
 
@@ -957,10 +1003,49 @@ function deliveryDocumentId(deliveryId) {
   return crypto.createHash('sha256').update(normalized).digest('hex');
 }
 
+function currentSignalNumberDateKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: signalNumberTimeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const value = (type) => parts.find((part) => part.type === type)?.value || '';
+  return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
+function signalNumberCounterDoc(ownerId, dateKey = currentSignalNumberDateKey()) {
+  const ownerHash = crypto.createHash('sha256').update(String(ownerId || 'anonymous')).digest('hex').slice(0, 40);
+  const safeDateKey = String(dateKey || '').replace(/[^0-9-]/g, '') || currentSignalNumberDateKey();
+  return runtimeDoc(`telegramSignalNumber_${safeDateKey}_${ownerHash}`);
+}
+
+async function reserveTelegramSignalNumber(ownerId) {
+  const db = requireFirestore();
+  const dateKey = currentSignalNumberDateKey();
+  const ref = signalNumberCounterDoc(ownerId, dateKey);
+
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    const current = Number(snapshot.data()?.lastNumber || 0);
+    const number = (Number.isFinite(current) && current > 0 ? Math.floor(current) : 0) + 1;
+    transaction.set(ref, {
+      ownerId,
+      dateKey,
+      timeZone: signalNumberTimeZone,
+      lastNumber: number,
+      updatedAt: nowIso(),
+    }, { merge: true });
+    return { number, dateKey, timeZone: signalNumberTimeZone };
+  });
+}
+
 function normalizeTradeSignal(input) {
   const signal = input && typeof input === 'object' ? input : {};
   const id = signalDocumentId(signal);
   const entry = Number(signal.entry);
+  const entryLow = Number(signal.entryLow);
+  const entryHigh = Number(signal.entryHigh);
   const sl = Number(signal.sl);
   const tp1 = Number(signal.tp1);
   const tp2 = Number(signal.tp2);
@@ -975,23 +1060,30 @@ function normalizeTradeSignal(input) {
     symbol: String(signal.symbol || 'XAUUSD').trim().toUpperCase().slice(0, 40),
     side: isBuy ? 'BUY' : 'SELL',
     isBuy,
+    confirmed: signal.confirmed !== false,
     interval: String(signal.interval || '5m').slice(0, 12),
     entry,
+    entryLow: Number.isFinite(entryLow) ? entryLow : entry,
+    entryHigh: Number.isFinite(entryHigh) ? entryHigh : entry,
+    entryText: String(signal.entryText || '').slice(0, 80),
     sl,
     originalSl: Number.isFinite(Number(signal.originalSl)) ? Number(signal.originalSl) : sl,
     tp1,
     tp2,
     tp3,
-    tpHits: Array.isArray(signal.tpHits) ? signal.tpHits.filter((item) => ['TP1', 'TP2', 'TP3'].includes(item)) : [],
+    tpHits: normalizeSignalTpHits(signal.tpHits),
     breakEvenMoved: Boolean(signal.breakEvenMoved),
     closed: Boolean(signal.closed),
     closedAt: signal.closedAt || null,
+    closeResult: String(signal.closeResult || '').slice(0, 12),
+    signalDate: String(signal.signalDate || '').slice(0, 20),
+    signalNumberTimeZone: String(signal.signalNumberTimeZone || '').slice(0, 60),
     signalTime: signal.time || null,
   };
 }
 
 async function handleTradeSignals(req, res, url) {
-  if (req.method !== 'POST' || !['/api/signals/sync', '/api/signals/open'].includes(url.pathname)) {
+  if (req.method !== 'POST' || !['/api/signals/sync', '/api/signals/open', '/api/signals/next-number'].includes(url.pathname)) {
     sendJson(res, 405, { ok: false, error: 'Method not allowed' });
     return;
   }
@@ -1001,6 +1093,12 @@ async function handleTradeSignals(req, res, url) {
     const payload = await readJsonBody(req);
     const auth = await resolveSession(await loadAuthStore(), payload, req);
     const db = requireFirestore();
+
+    if (url.pathname === '/api/signals/next-number') {
+      const reserved = await reserveTelegramSignalNumber(auth.user.id);
+      sendJson(res, 200, { ok: true, ...reserved });
+      return;
+    }
 
     if (url.pathname === '/api/signals/open') {
       const snapshot = await db.collection(telegramSignalsCollectionName).where('ownerId', '==', auth.user.id).get();
@@ -1290,15 +1388,55 @@ async function handlePriceWebSocket(req, socket) {
   }
 }
 
+function formatServerTradePrice(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '--';
+  return number.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
+}
+
+function formatServerEntryRange(signal) {
+  if (signal.entryText) return String(signal.entryText);
+  const entryLow = Number(signal.entryLow);
+  const entryHigh = Number(signal.entryHigh);
+  if (Number.isFinite(entryLow) && Number.isFinite(entryHigh)) {
+    return signal.isBuy === true || signal.side === 'BUY'
+      ? `${formatServerTradePrice(Math.max(entryLow, entryHigh))} - ${formatServerTradePrice(Math.min(entryLow, entryHigh))}`
+      : `${formatServerTradePrice(Math.min(entryLow, entryHigh))} - ${formatServerTradePrice(Math.max(entryLow, entryHigh))}`;
+  }
+  return formatServerTradePrice(signal.entry);
+}
+
 function formatServerTradeUpdate(signal, result, price) {
   const resultText = String(result).toUpperCase();
   const targetPrice = resultText === 'BE' ? signal.entry : resultText === 'SL' ? signal.sl : signal[resultText.toLowerCase()];
   return [
     `${resultText.startsWith('TP') ? '✅' : resultText === 'BE' ? '🟡' : '❌'} KÈO ${signal.number || ''} ${signal.side} ĐÃ ${resultText}`.trim(),
     `Mã: ${signal.symbol} | Khung: ${signal.interval}`,
-    `Entry: ${Number(signal.entry).toFixed(2)} | ${resultText}: ${Number(targetPrice).toFixed(2)}`,
-    `Giá kiểm tra: ${Number(price).toFixed(2)}`,
+    `Entry: ${formatServerEntryRange(signal)} | ${resultText}: ${formatServerTradePrice(targetPrice)}`,
+    `Giá kiểm tra: ${formatServerTradePrice(price)}`,
   ].join('\n');
+}
+
+function normalizeSignalTpHits(tpHits) {
+  const hitNames = new Set(
+    (Array.isArray(tpHits) ? tpHits : [])
+      .map((item) => String(item || '').toUpperCase())
+      .filter((item) => telegramTpOrder.includes(item)),
+  );
+  const orderedHits = [];
+  for (const name of telegramTpOrder) {
+    if (!hitNames.has(name)) break;
+    orderedHits.push(name);
+  }
+  return orderedHits;
+}
+
+function nextPendingSignalTarget(signal, tpHits) {
+  const nextName = telegramTpOrder[tpHits.length];
+  if (!nextName) return null;
+  const key = nextName.toLowerCase();
+  const price = Number(signal[key]);
+  return Number.isFinite(price) ? { key, name: nextName, price } : null;
 }
 
 async function monitorTradeSignals() {
@@ -1327,32 +1465,31 @@ async function monitorTradeSignals() {
       if (!Number.isFinite(price)) continue;
 
       const updates = { lastPrice: price, checkedAt: nowIso(), updatedAt: nowIso() };
-      const tpHits = Array.isArray(signal.tpHits) ? [...signal.tpHits] : [];
+      const tpHits = normalizeSignalTpHits(signal.tpHits);
       const isBuy = signal.isBuy === true || signal.side === 'BUY';
       const hitSl = isBuy ? price <= Number(signal.sl) : price >= Number(signal.sl);
       if (hitSl) {
         const result = signal.breakEvenMoved && Math.abs(Number(signal.sl) - Number(signal.entry)) < 0.000001 ? 'BE' : 'SL';
-        await deliverTelegramText(formatServerTradeUpdate(signal, result, price), `result:${signal.id}:${result}`);
         Object.assign(updates, { closed: true, closedAt: Date.now(), closeResult: result, tpHits });
         await document.set(updates);
         continue;
       }
 
-      for (const name of ['TP1', 'TP2', 'TP3']) {
-        if (tpHits.includes(name)) continue;
-        const target = Number(signal[name.toLowerCase()]);
-        const hitTarget = isBuy ? price >= target : price <= target;
-        if (!hitTarget) continue;
-        await deliverTelegramText(formatServerTradeUpdate(signal, name, price), `result:${signal.id}:${name}`);
-        tpHits.push(name);
-        if (name === 'TP1') {
+      const target = nextPendingSignalTarget(signal, tpHits);
+      if (target) {
+        const hitTarget = isBuy ? price >= target.price : price <= target.price;
+        if (hitTarget) {
+          await deliverTelegramText(formatServerTradeUpdate(signal, target.name, price), `result:${signal.id}:${target.name}`);
+          tpHits.push(target.name);
+        }
+        if (hitTarget && target.name === 'TP1') {
           updates.originalSl = Number.isFinite(Number(signal.originalSl)) ? Number(signal.originalSl) : Number(signal.sl);
           updates.sl = Number(signal.entry);
           updates.breakEvenMoved = true;
           signal.sl = updates.sl;
           signal.breakEvenMoved = true;
         }
-        if (name === 'TP3') Object.assign(updates, { closed: true, closedAt: Date.now(), closeResult: name });
+        if (hitTarget && target.name === 'TP3') Object.assign(updates, { closed: true, closedAt: Date.now(), closeResult: target.name });
       }
       updates.tpHits = tpHits;
       await document.set(updates);
