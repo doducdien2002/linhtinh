@@ -34,6 +34,7 @@ const priceCacheTtlMs = Math.max(Number(process.env.PRICE_CACHE_TTL_MS || realti
 const signalMonitorIntervalMs = Math.max(Number(process.env.SIGNAL_MONITOR_MS || 60_000), 10_000);
 const telegramTpOrder = ['TP1', 'TP2', 'TP3'];
 const signalNumberTimeZone = process.env.SIGNAL_NUMBER_TIME_ZONE || 'Asia/Ho_Chi_Minh';
+const signalNumberScope = process.env.SIGNAL_NUMBER_SCOPE || 'global';
 const apiLimitCooldownMs = Math.max(Number(process.env.TWELVEDATA_LIMIT_COOLDOWN_MS || 60 * 60_000), 60_000);
 const proxyDailyCacheTtlMs = Math.max(Number(process.env.PROXY_DAILY_CACHE_TTL_MS || 15 * 60_000), 60_000);
 const marketApiKeys = [
@@ -1014,23 +1015,40 @@ function currentSignalNumberDateKey(date = new Date()) {
   return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
-function signalNumberCounterDoc(ownerId, dateKey = currentSignalNumberDateKey()) {
-  const ownerHash = crypto.createHash('sha256').update(String(ownerId || 'anonymous')).digest('hex').slice(0, 40);
+function signalNumberCounterDoc(dateKey = currentSignalNumberDateKey()) {
   const safeDateKey = String(dateKey || '').replace(/[^0-9-]/g, '') || currentSignalNumberDateKey();
-  return runtimeDoc(`telegramSignalNumber_${safeDateKey}_${ownerHash}`);
+  return runtimeDoc(`telegramSignalNumber_${safeDateKey}`);
+}
+
+async function latestSignalNumberForDate(transaction, dateKey) {
+  const snapshot = await transaction.get(
+    requireFirestore()
+      .collection(telegramSignalsCollectionName)
+      .where('signalDate', '==', dateKey)
+  );
+  return snapshot.docs.reduce((max, document) => {
+    const number = Number(document.data()?.number || 0);
+    return Number.isFinite(number) && number > max ? Math.floor(number) : max;
+  }, 0);
 }
 
 async function reserveTelegramSignalNumber(ownerId) {
   const db = requireFirestore();
   const dateKey = currentSignalNumberDateKey();
-  const ref = signalNumberCounterDoc(ownerId, dateKey);
+  const ref = signalNumberCounterDoc(dateKey);
 
   return db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(ref);
-    const current = Number(snapshot.data()?.lastNumber || 0);
+    const stored = Number(snapshot.data()?.lastNumber || 0);
+    const existingMax = snapshot.exists ? 0 : await latestSignalNumberForDate(transaction, dateKey);
+    const current = Math.max(
+      Number.isFinite(stored) ? stored : 0,
+      Number.isFinite(existingMax) ? existingMax : 0,
+    );
     const number = (Number.isFinite(current) && current > 0 ? Math.floor(current) : 0) + 1;
     transaction.set(ref, {
-      ownerId,
+      scope: signalNumberScope,
+      lastOwnerId: ownerId,
       dateKey,
       timeZone: signalNumberTimeZone,
       lastNumber: number,
