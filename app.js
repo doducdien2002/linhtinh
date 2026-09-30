@@ -23,6 +23,8 @@ const el = {
   chart: document.querySelector('#chart'),
   status: document.querySelector('#status'),
   symbol: document.querySelector('#symbolInput'),
+  symbolTitle: document.querySelector('#symbolTitle'),
+  symbolPreset: document.querySelector('#symbolPresetSelect'),
   source: document.querySelector('#sourceSelect'),
   token: document.querySelector('#tokenInput'),
   opOffset: document.querySelector('#opOffsetInput'),
@@ -4245,6 +4247,10 @@ async function loadChart() {
   const limit = Number(el.limit.value);
   syncTimeframeButtons();
   el.symbol.value = symbol;
+  if (el.symbolTitle) el.symbolTitle.textContent = symbol;
+  if (el.symbolPreset && [...el.symbolPreset.options].some((option) => option.value === symbol)) {
+    el.symbolPreset.value = symbol;
+  }
   const sourceNote = source === 'yahoo'
     ? 'Yahoo fallback data, delayed'
     : source === 'twelvedata'
@@ -4551,6 +4557,10 @@ el.copySignal?.addEventListener('click', async () => {
 });
 el.symbol.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') loadChart();
+});
+el.symbolPreset?.addEventListener('change', () => {
+  el.symbol.value = el.symbolPreset.value;
+  loadChart();
 });
 el.source.addEventListener('change', () => {
   window.localStorage.setItem('marketSource', el.source.value);

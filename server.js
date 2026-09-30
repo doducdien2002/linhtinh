@@ -1308,6 +1308,11 @@ function priceStreamKey(symbol, token = '') {
 function tradingViewSymbol(symbol) {
   const normalized = String(symbol || 'XAUUSD').trim().toUpperCase().replace('/', '');
   if (normalized === 'XAUUSD' || normalized === 'GOLD') return 'OANDA:XAUUSD';
+  if (normalized === 'XAGUSD' || normalized === 'SILVER') return 'OANDA:XAGUSD';
+  if (normalized === 'USOIL' || normalized === 'WTI') return 'OANDA:WTICOUSD';
+  if (normalized === 'UKOIL' || normalized === 'BRENT') return 'OANDA:BCOUSD';
+  if (normalized === 'BTCUSD' || normalized === 'BTCUSDT') return 'BINANCE:BTCUSDT';
+  if (normalized === 'ETHUSD' || normalized === 'ETHUSDT') return 'BINANCE:ETHUSDT';
   return normalized.includes(':') ? normalized : `FX_IDC:${normalized}`;
 }
 
