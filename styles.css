@@ -95,6 +95,26 @@ body.auth-locked .app-shell {
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
+.symbol-selector {
+  width: 116px;
+  min-height: 34px;
+  padding: 0 24px 0 0;
+  border: 0;
+  outline: 0;
+  appearance: auto;
+  background: transparent;
+  color: #111827;
+  font: 900 19px/1 Arial, sans-serif;
+  cursor: pointer;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.symbol-selector:focus-visible {
+  outline: 2px solid #229ed9;
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
 .coin-mark {
   position: relative;
   display: inline-grid;

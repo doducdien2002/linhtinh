@@ -31,7 +31,13 @@
       <section class="toolbar">
         <div class="symbol-title">
           <span class="coin-mark"></span>
-          <strong id="symbolTitle">XAUUSD.ca</strong>
+          <select id="symbolPresetSelect" class="symbol-selector" aria-label="Chọn cặp giao dịch">
+            <option value="XAUUSD">XAUUSD</option>
+            <option value="XAGUSD">XAGUSD</option>
+            <option value="USOIL">USOIL</option>
+            <option value="UKOIL">UKOIL</option>
+            <option value="BTCUSDT">BTCUSDT</option>
+          </select>
         </div>
 
         <div class="chart-actions" aria-label="Chart controls">
@@ -75,16 +81,6 @@
         </div>
 
         <div id="advancedControlsPanel" class="control-hidden hidden" aria-label="Advanced controls">
-          <label class="market-feed-control">
-            <span>Mã</span>
-            <select id="symbolPresetSelect">
-              <option value="XAUUSD">Vàng XAUUSD</option>
-              <option value="XAGUSD">Bạc XAGUSD</option>
-              <option value="USOIL">Dầu WTI</option>
-              <option value="UKOIL">Dầu Brent</option>
-              <option value="BTCUSDT">Bitcoin BTCUSDT</option>
-            </select>
-          </label>
           <input id="symbolInput" value="XAUUSD" spellcheck="false" />
           <label class="market-feed-control">
             <span>Feed</span>
