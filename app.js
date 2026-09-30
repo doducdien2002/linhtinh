@@ -151,6 +151,7 @@ function ensureChartResizeObserver() {
   chartResizeObserver.observe(el.chart);
 }
 let latestMarkers = [];
+const persistentSignalMarkers = new Map();
 let latestLevelItems = [];
 let latestDiamondLine = null;
 let priceLines = [];
@@ -2696,8 +2697,24 @@ function renderComputed(candles, dailyCandles, shouldFit = false) {
 }
 
 function setMarkers(markers) {
-  latestMarkers = markers;
-  renderDiamondMarkers(markers);
+  for (const marker of markers || []) {
+    if (!Number.isFinite(Number(marker?.time))) continue;
+    const markerKey = [
+      marker.time,
+      marker.kind || '',
+      marker.label || '',
+      marker.strategy || '',
+    ].join('|');
+    if (!persistentSignalMarkers.has(markerKey)) {
+      persistentSignalMarkers.set(markerKey, marker);
+    }
+  }
+
+  const visibleTimes = new Set(currentCandles.map((candle) => candle.time));
+  latestMarkers = [...persistentSignalMarkers.values()]
+    .filter((marker) => visibleTimes.has(marker.time))
+    .sort((a, b) => a.time - b.time);
+  renderDiamondMarkers(latestMarkers);
   markerApi?.setMarkers?.([]);
   markerApi = null;
   candleSeries?.setMarkers?.([]);
@@ -4246,6 +4263,7 @@ async function loadChart() {
   latestSignalTelegram = null;
   telegramSignalStates = [];
   signalDetectionReady = false;
+  persistentSignalMarkers.clear();
 
   try {
     let activeSource = source;
