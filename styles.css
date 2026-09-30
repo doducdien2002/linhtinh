@@ -69,24 +69,23 @@ body.auth-locked .app-shell {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  min-height: 72px;
-  padding: 14px 18px;
-  background:
-    linear-gradient(90deg, rgba(214, 161, 11, 0.13), transparent 22%, rgba(8, 160, 69, 0.08)),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.94) 100%);
-  border-bottom: 1px solid rgba(217, 226, 239, 0.92);
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
-  backdrop-filter: blur(10px);
+  gap: 10px;
+  min-height: 52px;
+  padding: 6px 10px;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
 }
 
 .symbol-title {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  min-width: 178px;
-  gap: 10px;
+  flex: 0 0 218px;
+  min-width: 218px;
+  gap: 8px;
   color: #111827;
-  font-size: 19px;
+  font-size: 16px;
   line-height: 1;
 }
 
@@ -96,17 +95,28 @@ body.auth-locked .app-shell {
 }
 
 .symbol-selector {
-  width: 116px;
+  width: 138px;
   min-height: 34px;
-  padding: 0 24px 0 0;
+  padding: 0 24px 0 8px;
   border: 0;
   outline: 0;
-  appearance: auto;
-  background: transparent;
+  appearance: none;
+  background: #f5f6f8;
   color: #111827;
-  font: 900 19px/1 Arial, sans-serif;
+  font: 800 15px/1 Arial, sans-serif;
   cursor: pointer;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
+  border-radius: 5px;
+}
+
+.symbol-title::after {
+  content: "⌄";
+  position: absolute;
+  left: 195px;
+  top: 9px;
+  color: #6b7280;
+  font-size: 14px;
+  font-weight: 900;
+  pointer-events: none;
 }
 
 .symbol-selector:focus-visible {
@@ -151,13 +161,13 @@ body.auth-locked .app-shell {
 .chart-actions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px;
-  border: 1px solid rgba(217, 226, 239, 0.86);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.86);
-  backdrop-filter: blur(10px);
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  margin: 0 auto;
 }
 
 .toolbar-token-input {
@@ -233,13 +243,13 @@ body.auth-locked .app-shell {
 .icon-button {
   display: inline-grid;
   place-items: center;
-  height: 32px;
-  min-width: 42px;
+  height: 34px;
+  min-width: 40px;
   border: 1px solid transparent;
-  border-radius: 8px;
-  background: linear-gradient(180deg, #f8fafc, #edf2f7);
-  color: var(--ink);
-  font: 700 13px/1 Arial, sans-serif;
+  border-radius: 5px;
+  background: transparent;
+  color: #4b5563;
+  font: 700 12px/1 Arial, sans-serif;
   cursor: pointer;
   outline: none;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
@@ -250,20 +260,20 @@ body.auth-locked .app-shell {
 .add-toggle-button:hover,
 .signal-filter-button:hover,
 .icon-button:hover {
-  border-color: #cbd5e1;
-  background: #ffffff;
-  color: var(--ink);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
-  transform: translateY(-1px);
+  border-color: #d1d5db;
+  background: #f3f4f6;
+  color: #111827;
+  box-shadow: none;
+  transform: none;
 }
 
 .timeframe-button.active,
 .add-toggle-button.active,
 .signal-filter.open .signal-filter-button {
-  border-color: rgba(8, 160, 69, 0.95);
-  background: linear-gradient(135deg, #063f24 0%, #08a045 56%, #d6a10b 100%);
-  color: #ffffff;
-  box-shadow: 0 8px 20px rgba(8, 160, 69, 0.26);
+  border-color: #d1d5db;
+  background: #e5e7eb;
+  color: #111827;
+  box-shadow: none;
 }
 
 .add-toggle-button {
@@ -285,8 +295,8 @@ body.auth-locked .app-shell {
   font-size: 12px;
   font-weight: 800;
   white-space: nowrap;
-  color: #23400f;
-  background: linear-gradient(180deg, #fff9db, #eefbea);
+  color: #374151;
+  background: #f5f6f8;
 }
 
 .signal-filter-menu {
@@ -334,6 +344,14 @@ body.auth-locked .app-shell {
   background: #ffffff;
   color: var(--ink);
   font-size: 19px;
+}
+
+.icon-button:hover {
+  background: #f3f4f6;
+}
+
+.signal-toggle-button {
+  border-radius: 5px;
 }
 
 .icon-button[disabled],
@@ -1506,7 +1524,17 @@ select {
     min-width: 0;
     padding-right: 8px;
     font-size: 15px;
-    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    background: #ffffff;
+  }
+
+  .symbol-title::after {
+    left: auto;
+    right: 16px;
+  }
+
+  .symbol-selector {
+    width: 112px;
+    font-size: 14px;
   }
 
   .control-hidden {
