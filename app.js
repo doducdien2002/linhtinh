@@ -163,6 +163,7 @@ let liveRenderFrame = 0;
 let queuedLiveCandle = null;
 let queuedLivePrice = null;
 let lastFullRenderAt = 0;
+let lastLiveComputedCandleTime = null;
 let tickPollSource;
 let tickPollSymbol;
 let tickPollInterval;
@@ -2652,6 +2653,7 @@ function updatePaneTitles(indicators) {
 }
 
 function renderComputed(candles, dailyCandles, shouldFit = false) {
+  lastLiveComputedCandleTime = candles.at(-1)?.time ?? null;
   const levels = computeLevels(candles, dailyCandles);
   const indicators = computeIndicators(candles, levels);
   latestDiamondLine = indicators.diamondLine;
@@ -3876,9 +3878,10 @@ function scheduleFullRender(delayMs = 450) {
 }
 
 function maybeRefreshComputed(maxAgeMs = 2500) {
-  if (performance.now() - lastFullRenderAt >= maxAgeMs) {
-    scheduleFullRender(0);
-  }
+  const currentCandleTime = currentCandles.at(-1)?.time;
+  if (!Number.isFinite(currentCandleTime) || currentCandleTime === lastLiveComputedCandleTime) return;
+  lastLiveComputedCandleTime = currentCandleTime;
+  scheduleFullRender(0);
 }
 
 function alignCandleTime(timestampSeconds, interval) {
