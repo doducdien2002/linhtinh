@@ -355,6 +355,22 @@ body.auth-locked .app-shell {
   display: none;
 }
 
+/* The settings panel is moved to body when opened. Keep it above every chart
+   canvas regardless of the browser's stacking-context implementation. */
+body > #advancedControlsPanel:not(.hidden) {
+  position: fixed !important;
+  top: 82px !important;
+  right: 10px !important;
+  left: 10px !important;
+  bottom: auto !important;
+  z-index: 2147483647 !important;
+  width: auto !important;
+  max-height: calc(100vh - 94px) !important;
+  max-height: calc(100dvh - 94px) !important;
+  overflow: auto !important;
+  pointer-events: auto !important;
+}
+
 .control-hidden input,
 .control-hidden select {
   height: 34px;
