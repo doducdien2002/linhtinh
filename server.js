@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { tv } = require('tradingview-api-adapter');
+const { computeLevels, computeIndicators } = require('./indicator-engine');
 
 const root = __dirname;
 const port = Number(process.env.PORT || 8097);
@@ -50,6 +51,10 @@ const marketApiKeys = [
 const priceFetchPending = new Map();
 const apiLimitCooldowns = new Map();
 const blockedFileNames = new Set([
+  'server.js',
+  'indicator-engine.js',
+  'package.json',
+  'package-lock.json',
   '.env',
   '.env.local',
   'auth.store.json',
@@ -1169,6 +1174,57 @@ async function handleTradeSignals(req, res, url) {
   }
 }
 
+function normalizeIndicatorCandles(input) {
+  if (!Array.isArray(input) || input.length < 5 || input.length > 5000) {
+    throw sessionError(400, 'Dữ liệu nến không hợp lệ.');
+  }
+  return input.map((item) => {
+    const candle = {
+      time: Number(item?.time),
+      open: Number(item?.open),
+      high: Number(item?.high),
+      low: Number(item?.low),
+      close: Number(item?.close),
+      volume: Math.max(Number(item?.volume) || 1, 1),
+    };
+    if (!Number.isFinite(candle.time) || ![candle.open, candle.high, candle.low, candle.close].every(Number.isFinite)) {
+      throw sessionError(400, 'Dữ liệu nến chứa giá trị không hợp lệ.');
+    }
+    if (candle.high < Math.max(candle.open, candle.close) || candle.low > Math.min(candle.open, candle.close)) {
+      throw sessionError(400, 'Biên nến không hợp lệ.');
+    }
+    return candle;
+  });
+}
+
+async function handleIndicatorCompute(req, res) {
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { ok: false, error: 'Method not allowed' });
+    return;
+  }
+  try {
+    const payload = await readJsonBody(req, 900000);
+    const candles = normalizeIndicatorCandles(payload.candles);
+    const dailyCandles = normalizeIndicatorCandles(payload.dailyCandles || candles);
+    const interval = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'].includes(payload.interval)
+      ? payload.interval
+      : '5m';
+    const opOffset = Number(payload.opOffset || 0);
+    if (!Number.isFinite(opOffset) || Math.abs(opOffset) > 100000) {
+      throw sessionError(400, 'OP offset không hợp lệ.');
+    }
+    const levels = computeLevels(candles, dailyCandles, interval, opOffset);
+    const indicators = computeIndicators(candles, levels, {
+      hideProbabilitySignals: payload.hideProbabilitySignals === true,
+      hideAddSignals: payload.hideAddSignals === true,
+      hideDiamondSignals: payload.hideDiamondSignals === true,
+    });
+    sendJson(res, 200, { ok: true, levels, indicators });
+  } catch (error) {
+    sendJson(res, error.status || 400, { ok: false, error: error.message || 'Indicator computation failed' });
+  }
+}
+
 function twelveDataSignalSymbol(symbol) {
   const normalized = String(symbol || '').trim().toUpperCase();
   if (normalized === 'XAUUSD' || normalized === 'XAU/USD' || normalized === 'GOLD') return 'XAU/USD';
@@ -1742,6 +1798,7 @@ function serveFile(res, pathname) {
     || lowerName.endsWith('.bak')
     || lowerName.endsWith('.config.json')
     || lowerName.endsWith('.store.json')
+    || lowerName.endsWith('.pine')
     || lowerName.includes('secret')
   ) {
     send(res, 403, 'Forbidden');
@@ -1801,6 +1858,7 @@ const server = http.createServer(async (req, res) => {
     || url.pathname === '/api/tradingview/history'
     || url.pathname === '/api/twelvedata/time_series'
     || url.pathname === '/api/twelvedata/price'
+    || url.pathname === '/api/indicators/compute'
   ) {
     const auth = await requireAuthenticatedRequest(req, res);
     if (!auth) return;
@@ -1844,6 +1902,11 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 502, { s: 'error', error: error.message || 'TradingView history unavailable' });
     }
+    return;
+  }
+
+  if (url.pathname === '/api/indicators/compute') {
+    handleIndicatorCompute(req, res);
     return;
   }
 
