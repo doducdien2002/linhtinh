@@ -2567,7 +2567,9 @@ function makePriceLine(series, price, color, title, lineStyle = LightweightChart
     lineWidth,
     lineStyle,
     axisLabelVisible,
-    title,
+    // Names are already shown by the left-side badges. Keep only the
+    // color-coded numeric price on the right price scale.
+    title: '',
   });
   priceLines.push(line);
   return line;
@@ -2616,7 +2618,7 @@ function renderLevels(levels, diamondLine = null) {
       item.title,
       item.style,
       item.lineWidth || 1,
-      item.key !== 'ktrMinus2',
+      true,
     );
     if (item.key === 'price') livePriceLine = line;
   }
