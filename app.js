@@ -4362,6 +4362,9 @@ function applySignalFilterChange() {
 
 function positionFixedPanel(panel, anchorEl, { align = 'right' } = {}) {
   if (!panel || !anchorEl) return;
+  // Keep floating controls outside the app/chart stacking contexts. The chart
+  // uses clipped canvas layers, which can otherwise cover fixed descendants.
+  if (panel.parentElement !== document.body) document.body.appendChild(panel);
   const margin = 8;
   const viewportHeight = window.visualViewport?.height || window.innerHeight;
   const viewportWidth = window.visualViewport?.width || window.innerWidth;
