@@ -74,6 +74,10 @@ function securityHeaders(type) {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'same-origin',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Origin-Agent-Cluster': '?1',
+    'X-Permitted-Cross-Domain-Policies': 'none',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
     'Content-Security-Policy': [
       "default-src 'self'",
@@ -249,6 +253,14 @@ function requireInitialAdminPassword() {
   return password || 'admin123';
 }
 
+function validatePassword(password) {
+  const value = String(password || '');
+  if (value.length < 12 || value.length > 200) {
+    throw sessionError(400, 'Mật khẩu cần từ 12 đến 200 ký tự.');
+  }
+  return value;
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   const hash = crypto.pbkdf2Sync(String(password), salt, 120000, 32, 'sha256').toString('hex');
   return { salt, hash };
@@ -298,6 +310,19 @@ function normalizeAuthStore(store) {
   normalized.users = Array.isArray(normalized.users) ? normalized.users : [];
   normalized.sessions = Array.isArray(normalized.sessions) ? normalized.sessions : [];
   return normalized;
+}
+
+async function requireAuthenticatedRequest(req, res) {
+  if (rejectCrossOrigin(req, res)) return null;
+  try {
+    const sessionId = String(req.headers['x-session-id'] || requestQueryValue(req, 'sessionId') || '').trim();
+    if (!sessionId) throw sessionError(401, 'Vui lòng đăng nhập để sử dụng dữ liệu thị trường.', 'missing_session');
+    const store = await loadAuthStore();
+    return await resolveSession(store, { sessionId }, req);
+  } catch (error) {
+    sendJson(res, error.status || 401, { ok: false, error: error.message, reason: error.reason || 'unauthorized' });
+    return null;
+  }
 }
 
 function loadLegacyAuthStore() {
@@ -751,14 +776,10 @@ async function handleAuthAdmin(req, res, url) {
 
     if (url.pathname === '/api/auth/admin/create-user') {
       const username = String(payload.username || '').trim();
-      const password = String(payload.password || '');
+      const password = validatePassword(payload.password);
       const role = payload.role === 'admin' ? 'admin' : 'user';
       if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) {
         sendJson(res, 400, { ok: false, error: 'Tên tài khoản 3-32 ký tự, chỉ dùng chữ/số/._-' });
-        return;
-      }
-      if (password.length < 4) {
-        sendJson(res, 400, { ok: false, error: 'Mật khẩu cần ít nhất 4 ký tự.' });
         return;
       }
       if (findUserByUsername(store, username)) {
@@ -882,13 +903,9 @@ async function handleAuthAdmin(req, res, url) {
 
     if (url.pathname === '/api/auth/admin/change-password') {
       const user = store.users.find((item) => item.id === String(payload.userId || ''));
-      const password = String(payload.password || '');
+      const password = validatePassword(payload.password);
       if (!user) {
         sendJson(res, 404, { ok: false, error: 'Không tìm thấy tài khoản.' });
-        return;
-      }
-      if (password.length < 4) {
-        sendJson(res, 400, { ok: false, error: 'Mật khẩu cần ít nhất 4 ký tự.' });
         return;
       }
       const hashed = hashPassword(password);
@@ -1436,6 +1453,13 @@ async function handlePriceWebSocket(req, socket) {
       socket.destroy();
       return;
     }
+    const sessionId = String(url.searchParams.get('sessionId') || '').trim();
+    if (!sessionId) {
+      socket.destroy();
+      return;
+    }
+    const store = await loadAuthStore();
+    await resolveSession(store, { sessionId }, req);
 
     socket.write([
       'HTTP/1.1 101 Switching Protocols',
@@ -1708,7 +1732,8 @@ function serveFile(res, pathname) {
   const safePath = pathname === '/' ? '/index.html' : pathname;
   const filePath = path.normalize(path.join(root, safePath));
   const lowerName = path.basename(filePath).toLowerCase();
-  if (!filePath.startsWith(root)) {
+  const relativePath = path.relative(root, filePath);
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
     send(res, 403, 'Forbidden');
     return;
   }
@@ -1767,6 +1792,18 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith('/api/auth/')) {
     handleAuth(req, res, url);
     return;
+  }
+
+  if (
+    url.pathname === '/api/yahoo/chart'
+    || url.pathname === '/api/binance/klines'
+    || url.pathname === '/api/binance/ticker'
+    || url.pathname === '/api/tradingview/history'
+    || url.pathname === '/api/twelvedata/time_series'
+    || url.pathname === '/api/twelvedata/price'
+  ) {
+    const auth = await requireAuthenticatedRequest(req, res);
+    if (!auth) return;
   }
 
   if (url.pathname === '/api/yahoo/chart') {

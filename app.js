@@ -100,6 +100,7 @@ window.fetch = (input, init = {}) => {
   const headers = new Headers(init.headers || (typeof input === 'object' ? input.headers : undefined));
   headers.set('x-device-id', getDeviceId());
   headers.set('x-device-name', getDeviceName());
+  if (authState?.sessionId) headers.set('x-session-id', authState.sessionId);
   return nativeFetch(input, { ...init, headers });
 };
 // --------------------------------------------------------------------------
@@ -4085,6 +4086,7 @@ function startTwelveDataProxyStream(symbol, interval, limit, token) {
     symbol,
     deviceId: getDeviceId(),
     deviceName: getDeviceName(),
+    sessionId: authState.sessionId,
   });
   if (token) params.set('apikey', token);
   liveSocket = new WebSocket(`${protocol}//${window.location.host}/api/ws/price?${params}`);
@@ -4167,6 +4169,7 @@ function startTradingViewStream(symbol, interval, limit, token) {
     symbol,
     deviceId: getDeviceId(),
     deviceName: getDeviceName(),
+    sessionId: authState.sessionId,
   });
   liveSocket = new WebSocket(`${protocol}//${window.location.host}/api/ws/price?${params}`);
 
@@ -4706,7 +4709,7 @@ el.adminUserList?.addEventListener('click', async (event) => {
   }
 
   if (action === 'password') {
-    const password = window.prompt('Nhap mat khau moi (toi thieu 4 ky tu):');
+    const password = window.prompt('Nhập mật khẩu mới (tối thiểu 12 ký tự):');
     if (!password) return;
     await adminPost('/api/auth/admin/change-password', { userId, password });
   }

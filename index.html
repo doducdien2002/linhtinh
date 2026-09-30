@@ -231,7 +231,7 @@
         <section id="adminUsersSection" class="admin-section">
           <form id="createUserForm" class="create-user-form">
             <input id="newUsername" placeholder="Tài khoản mới" required spellcheck="false" />
-            <input id="newPassword" placeholder="Mật khẩu mới" required type="password" />
+            <input id="newPassword" placeholder="Mật khẩu mới (12+ ký tự)" minlength="12" required type="password" />
             <select id="newRole">
               <option value="user">User</option>
               <option value="admin">Admin</option>
