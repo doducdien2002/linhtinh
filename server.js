@@ -2,6 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { tv } = require('tradingview-api-adapter');
 
 const root = __dirname;
 const port = Number(process.env.PORT || 8097);
@@ -22,6 +23,8 @@ const deviceCache = new Map();
 const priceCache = new Map();
 const proxyResponseCache = new Map();
 const priceStreams = new Map();
+const tradingViewStreams = new Map();
+let tradingViewClient = null;
 const runtimeCollectionName = process.env.FIRESTORE_RUNTIME_COLLECTION || 'craziiRuntime';
 const authStoreDocName = process.env.FIRESTORE_AUTH_DOC || 'authStore';
 const devicesCollectionName = process.env.FIRESTORE_DEVICES_COLLECTION || 'craziiDevices';
@@ -77,7 +80,7 @@ function securityHeaders(type) {
       "script-src 'self' https://cdn.jsdelivr.net",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data:",
-      "connect-src 'self' https://api.telegram.org wss://stream.binance.com:9443 wss://ws.finnhub.io wss://ws.twelvedata.com",
+      "connect-src 'self' https://api.telegram.org wss://stream.binance.com:9443 wss://ws.twelvedata.com",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",
@@ -1302,6 +1305,65 @@ function priceStreamKey(symbol, token = '') {
   return `${normalizedSymbol}:${tokenHash}`;
 }
 
+function tradingViewSymbol(symbol) {
+  const normalized = String(symbol || 'XAUUSD').trim().toUpperCase().replace('/', '');
+  if (normalized === 'XAUUSD' || normalized === 'GOLD') return 'OANDA:XAUUSD';
+  return normalized.includes(':') ? normalized : `FX_IDC:${normalized}`;
+}
+
+function getTradingViewStream(symbol) {
+  const tvSymbol = tradingViewSymbol(symbol);
+  let stream = tradingViewStreams.get(tvSymbol);
+  if (stream) return stream;
+
+  if (!tradingViewClient) tradingViewClient = tv();
+  const clients = new Set();
+  const quoteStream = tradingViewClient.symbol(tvSymbol).stream(['lp', 'bid', 'ask']);
+  stream = { key: tvSymbol, symbol: tvSymbol, clients, quoteStream };
+  quoteStream.on('price', (quote) => {
+    const price = Number(quote?.price ?? quote?.lp);
+    if (!Number.isFinite(price)) return;
+    const payload = {
+      type: 'price',
+      source: 'tradingview-oanda',
+      symbol: tvSymbol,
+      price,
+      bid: Number.isFinite(Number(quote?.bid)) ? Number(quote.bid) : undefined,
+      ask: Number.isFinite(Number(quote?.ask)) ? Number(quote.ask) : undefined,
+      timestamp: Date.now(),
+    };
+    for (const client of clients) sendWebSocketJson(client, payload);
+  });
+  tradingViewStreams.set(tvSymbol, stream);
+  return stream;
+}
+
+function stopTradingViewStreamIfIdle(stream) {
+  if (!stream || stream.clients.size) return;
+  stream.quoteStream.stop?.();
+  tradingViewStreams.delete(stream.key);
+}
+
+function tradingViewTimeframe(interval) {
+  return ({ '1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '1d': '1D' })[interval] || '5';
+}
+
+async function fetchTradingViewHistory(symbol, interval, limit) {
+  if (!tradingViewClient) tradingViewClient = tv();
+  const candles = await tradingViewClient.symbol(tradingViewSymbol(symbol)).candles({
+    timeframe: tradingViewTimeframe(interval),
+    count: Math.min(Math.max(Number(limit) || 1000, 1), 5000),
+  });
+  return candles.map((candle) => ({
+    time: Number(candle.time),
+    open: Number(candle.open),
+    high: Number(candle.high),
+    low: Number(candle.low),
+    close: Number(candle.close),
+    volume: Math.max(Number(candle.volume) || 1, 1),
+  })).filter((candle) => Number.isFinite(candle.time) && Number.isFinite(candle.close));
+}
+
 function stopPriceStreamIfIdle(key) {
   const stream = priceStreams.get(key);
   if (!stream || stream.clients.size) return;
@@ -1379,19 +1441,24 @@ async function handlePriceWebSocket(req, socket) {
       '',
     ].join('\r\n'));
 
-    const stream = getPriceStream(url.searchParams.get('symbol') || 'XAUUSD', url.searchParams.get('apikey') || url.searchParams.get('token') || '');
+    const source = url.searchParams.get('source') || 'twelvedata-proxy';
+    const requestedSymbol = url.searchParams.get('symbol') || 'XAUUSD';
+    const stream = source === 'tradingview'
+      ? getTradingViewStream(requestedSymbol)
+      : getPriceStream(requestedSymbol, url.searchParams.get('apikey') || url.searchParams.get('token') || '');
     stream.clients.add(socket);
     sendWebSocketJson(socket, {
       type: 'ready',
-      source: 'twelvedata-proxy',
+      source: source === 'tradingview' ? 'tradingview-oanda' : 'twelvedata-proxy',
       symbol: stream.symbol,
-      intervalMs: realtimePricePollMs,
+      intervalMs: source === 'tradingview' ? 0 : realtimePricePollMs,
       timestamp: Date.now(),
     });
 
     const cleanup = () => {
       stream.clients.delete(socket);
-      stopPriceStreamIfIdle(stream.key);
+      if (source === 'tradingview') stopTradingViewStreamIfIdle(stream);
+      else stopPriceStreamIfIdle(stream.key);
     };
     socket.on('close', cleanup);
     socket.on('error', cleanup);
@@ -1724,17 +1791,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname === '/api/finnhub/candle') {
-    const target = new URL('https://finnhub.io/api/v1/forex/candle');
-    for (const [key, value] of url.searchParams) target.searchParams.set(key, value);
-    proxyJsonWithKeyFallback(res, target, 'token');
-    return;
-  }
-
-  if (url.pathname === '/api/finnhub/quote') {
-    const target = new URL('https://finnhub.io/api/v1/quote');
-    for (const [key, value] of url.searchParams) target.searchParams.set(key, value);
-    proxyJsonWithKeyFallback(res, target, 'token');
+  if (url.pathname === '/api/tradingview/history') {
+    try {
+      const candles = await fetchTradingViewHistory(
+        url.searchParams.get('symbol') || 'XAUUSD',
+        url.searchParams.get('interval') || '5m',
+        url.searchParams.get('limit') || '1000',
+      );
+      sendJson(res, 200, { s: 'ok', candles });
+    } catch (error) {
+      sendJson(res, 502, { s: 'error', error: error.message || 'TradingView history unavailable' });
+    }
     return;
   }
 

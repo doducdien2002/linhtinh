@@ -103,7 +103,7 @@ window.fetch = (input, init = {}) => {
 // --------------------------------------------------------------------------
 
 const savedSource = window.localStorage.getItem('marketSource');
-if (savedSource === 'twelvedata') {
+if (savedSource === 'twelvedata' || savedSource === 'tradingview') {
   el.source.value = savedSource;
 } else {
   window.localStorage.setItem('marketSource', 'twelvedata');
@@ -186,7 +186,6 @@ let signalNoticeCollapsed = false;
 let signalNoticeDragState = null;
 let twelveDataStreamPollMs = 60_000;
 let twelveDataReconnectAttempts = 0;
-let finnhubReconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 6;
 const SIGNAL_NOTICE_POSITION_KEY = 'signalNoticePosition';
 function savedHiddenDefaultOn(key) {
@@ -330,16 +329,6 @@ const yahooIntervalRange = {
   '1d': '10y',
 };
 
-const finnhubResolution = {
-  '1m': '1',
-  '5m': '5',
-  '15m': '15',
-  '30m': '30',
-  '1h': '60',
-  '4h': '240',
-  '1d': 'D',
-};
-
 const twelveDataInterval = {
   '1m': '1min',
   '5m': '5min',
@@ -356,9 +345,6 @@ const fallbackPollMs = {
   },
   binance: {
     default: 300,
-  },
-  finnhub: {
-    default: 450,
   },
   twelvedata: {
     default: 1_000,
@@ -504,7 +490,6 @@ function providerError(provider, message) {
 
 function sourceTokenKey(source) {
   if (source === 'twelvedata') return 'twelveDataToken';
-  if (source === 'finnhub') return 'finnhubToken';
   return `${source}Token`;
 }
 
@@ -977,13 +962,6 @@ async function fetchYahooResult(yahooSymbol, params, label) {
   return { result, quote };
 }
 
-function toFinnhubSymbol(symbol) {
-  const normalized = symbol.trim().toUpperCase().replace('/', '').replace('_', '');
-  if (normalized === 'XAUUSD' || normalized === 'GOLD') return 'OANDA:XAU_USD';
-  if (normalized === 'XAGUSD' || normalized === 'SILVER') return 'OANDA:XAG_USD';
-  return symbol.trim().toUpperCase();
-}
-
 function toTwelveDataSymbol(symbol) {
   const normalized = symbol.trim().toUpperCase().replace('/', '').replace('_', '');
   if (normalized === 'XAUUSD' || normalized === 'GOLD') return 'XAU/USD';
@@ -1074,56 +1052,6 @@ async function fetchYahooLastPrice(symbol) {
   return last.close;
 }
 
-async function fetchFinnhubCandles(symbol, interval, limit, token) {
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - (intervalMs[interval] || 60_000) / 1000 * Math.max(limit + 10, 120);
-  const params = new URLSearchParams({
-    symbol: toFinnhubSymbol(symbol),
-    resolution: finnhubResolution[interval] || '5',
-    from: String(Math.floor(from)),
-    to: String(to),
-  });
-  if (token) params.set('token', token);
-  const response = await fetch(`/api/finnhub/candle?${params}`);
-  if (!response.ok) throw new Error(`Finnhub candle tráº£ lá»—i ${response.status}.`);
-  const data = await response.json();
-  if (data.s !== 'ok') throw new Error(`Finnhub khÃ´ng tráº£ náº¿n: ${data.s || 'unknown'}`);
-
-  return data.t.map((time, index) => ({
-    time,
-    open: Number(data.o[index]),
-    high: Number(data.h[index]),
-    low: Number(data.l[index]),
-    close: Number(data.c[index]),
-    volume: Number(data.v?.[index] || 1),
-  })).slice(-limit);
-}
-
-async function fetchFinnhubDaily(symbol, token) {
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - 420 * 24 * 60 * 60;
-  const params = new URLSearchParams({
-    symbol: toFinnhubSymbol(symbol),
-    resolution: 'D',
-    from: String(from),
-    to: String(to),
-  });
-  if (token) params.set('token', token);
-  const response = await fetch(`/api/finnhub/candle?${params}`);
-  if (!response.ok) throw new Error(`Finnhub daily tráº£ lá»—i ${response.status}.`);
-  const data = await response.json();
-  if (data.s !== 'ok') throw new Error(`Finnhub khÃ´ng tráº£ daily: ${data.s || 'unknown'}`);
-
-  return data.t.map((time, index) => ({
-    time,
-    open: Number(data.o[index]),
-    high: Number(data.h[index]),
-    low: Number(data.l[index]),
-    close: Number(data.c[index]),
-    volume: Number(data.v?.[index] || 1),
-  }));
-}
-
 function parseTwelveDataValues(data) {
   if (data.status === 'error') {
     throw providerError('twelvedata', data.message || 'TwelveData error.');
@@ -1173,30 +1101,29 @@ async function fetchTwelveDataDaily(symbol, token) {
   return parseTwelveDataValues(await response.json());
 }
 
+async function fetchTradingViewCandles(symbol, interval, limit) {
+  const params = new URLSearchParams({ symbol, interval, limit: String(limit) });
+  const response = await fetch(`/api/tradingview/history?${params}`);
+  if (!response.ok) throw new Error(`TradingView history returned ${response.status}.`);
+  const data = await response.json();
+  if (data.s !== 'ok' || !Array.isArray(data.candles)) {
+    throw new Error(data.error || 'TradingView history unavailable.');
+  }
+  return data.candles;
+}
+
 async function fetchMarketCandles(source, symbol, interval, limit, token) {
   if (source === 'binance') return fetchBinanceKlines(symbol, interval, limit);
-  if (source === 'finnhub') return fetchFinnhubCandles(symbol, interval, limit, token);
+  if (source === 'tradingview') return fetchTradingViewCandles(symbol, interval, limit);
   if (source === 'twelvedata') return fetchTwelveDataCandles(symbol, interval, limit, token);
   return fetchYahooChart(symbol, interval, limit);
 }
 
 async function fetchMarketDaily(source, symbol, token) {
   if (source === 'binance') return fetchDaily(symbol);
-  if (source === 'finnhub') return fetchFinnhubDaily(symbol, token);
+  if (source === 'tradingview') return fetchTradingViewCandles(symbol, '1d', 260);
   if (source === 'twelvedata') return fetchTwelveDataDaily(symbol, token);
   return fetchYahooDaily(symbol);
-}
-
-async function fetchFinnhubQuote(symbol, token) {
-  const params = new URLSearchParams({ symbol: toFinnhubSymbol(symbol) });
-  if (token) params.set('token', token);
-  const response = await fetch(`/api/finnhub/quote?${params}`);
-  if (!response.ok) throw new Error(`Finnhub quote returned ${response.status}.`);
-
-  const data = await response.json();
-  const price = toPositiveNumber(data.c);
-  if (price !== null) return price;
-  throw new Error('Finnhub quote has no valid price.');
 }
 
 async function fetchTwelveDataPrice(symbol, token) {
@@ -1217,7 +1144,6 @@ async function fetchTwelveDataPrice(symbol, token) {
 
 async function fetchMarketPrice(source, symbol, token = '') {
   if (source === 'binance') return fetchTickerPrice(symbol);
-  if (source === 'finnhub') return fetchFinnhubQuote(symbol, token);
   if (source === 'twelvedata') return fetchTwelveDataPrice(symbol, token);
   return fetchYahooMetaPrice(symbol);
 }
@@ -4027,50 +3953,6 @@ function startTickerFallback(source, symbol, interval, limit, token = '') {
   poll();
 }
 
-function startFinnhubStream(symbol, interval, limit, token) {
-  closeLiveSocket();
-  const finnhubSymbol = toFinnhubSymbol(symbol);
-  liveSocket = new WebSocket(`wss://ws.finnhub.io?token=${encodeURIComponent(token)}`);
-
-  liveSocket.onopen = () => {
-    finnhubReconnectAttempts = 0;
-    liveSocket.send(JSON.stringify({ type: 'subscribe', symbol: finnhubSymbol }));
-    el.status.textContent = `${symbol} ${interval} FINNHUB TICK`;
-  };
-  liveSocket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type !== 'trade' || !Array.isArray(message.data)) return;
-    const lastTick = message.data.at(-1);
-    const price = Number(lastTick?.p);
-    if (!Number.isFinite(price)) return;
-
-    const candle = updateCurrentPrice(price, interval, limit, Math.floor(Number(lastTick.t || Date.now()) / 1000));
-    if (candle) renderLiveCandle(candle, price);
-    maybeRefreshComputed(1800);
-    el.status.textContent = `${symbol} FINNHUB ${formatPrice(price)}`;
-  };
-
-    liveSocket.onerror = () => {
-    el.status.textContent = `${symbol} ${interval} Finnhub loi, dang thu ket noi lai...`;
-  };
-
-  liveSocket.onclose = () => {
-    liveSocket = null;
-
-    if (finnhubReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-      const delay = Math.min(2000 * 2 ** finnhubReconnectAttempts, 30000);
-      finnhubReconnectAttempts += 1;
-      el.status.textContent = `${symbol} Finnhub mat ket noi, thu lai sau ${Math.round(delay / 1000)}s...`;
-      window.setTimeout(() => {
-        if (el.source.value === 'finnhub') {
-          startFinnhubStream(symbol, interval, limit, token);
-        }
-      }, delay);
-    } else {
-      startTickerFallback('finnhub', symbol, interval, limit, token);
-    }
-  };
-}
 function fallbackToYahoo(sourceName, symbol, interval, limit, reason = '') {
   closeLiveSocket();
   const detail = reason ? ` (${reason})` : '';
@@ -4079,6 +3961,82 @@ function fallbackToYahoo(sourceName, symbol, interval, limit, reason = '') {
 }
 
 function startTwelveDataStream(symbol, interval, limit, token) {
+  // A Twelve Data API key can use the provider's push feed directly. The old
+  // local proxy remains the fallback for deployments that keep the key server-side.
+  if (token) {
+    startTwelveDataDirectStream(symbol, interval, limit, token);
+    return;
+  }
+
+  startTwelveDataProxyStream(symbol, interval, limit, token);
+}
+
+function startTwelveDataDirectStream(symbol, interval, limit, token) {
+  closeLiveSocket();
+  liveSocket = new WebSocket(`wss://ws.twelvedata.com/v1/quotes/price?apikey=${encodeURIComponent(token)}`);
+
+  liveSocket.onopen = () => {
+    twelveDataReconnectAttempts = 0;
+    liveSocket.send(JSON.stringify({
+      action: 'subscribe',
+      params: { symbols: toTwelveDataSymbol(symbol) },
+    }));
+    socketHeartbeatTimer = window.setInterval(() => {
+      if (liveSocket?.readyState === WebSocket.OPEN) {
+        liveSocket.send(JSON.stringify({ action: 'heartbeat' }));
+      }
+    }, 15000);
+    el.status.textContent = `${symbol} ${interval} TWELVEDATA WS dang ket noi`;
+  };
+
+  liveSocket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.event === 'subscribe-status' || message.type === 'subscribe-status') {
+      el.status.textContent = `${symbol} ${interval} TWELVEDATA WS LIVE`;
+      return;
+    }
+    if (message.event === 'heartbeat' || message.type === 'heartbeat') return;
+    if (message.event === 'error' || message.type === 'error') {
+      el.status.textContent = `${symbol} TwelveData WS loi: ${message.message || message.error || 'stream error'}`;
+      return;
+    }
+
+    const price = Number(message.price ?? message.p ?? message.value);
+    if (!Number.isFinite(price)) return;
+
+    const rawTimestamp = Number(message.timestamp || message.ts || Date.now());
+    const timestampMs = rawTimestamp > 0 && rawTimestamp < 1e12 ? rawTimestamp * 1000 : rawTimestamp;
+    const candle = updateCurrentPrice(price, interval, limit, Math.floor(timestampMs / 1000));
+    if (candle) renderLiveCandle(candle, price);
+    maybeRefreshComputed(800);
+    el.status.textContent = `${symbol} ${interval} TWELVEDATA WS LIVE ${formatPrice(price)} ${new Date(timestampMs).toLocaleTimeString()}`;
+  };
+
+  liveSocket.onerror = () => {
+    el.status.textContent = `${symbol} TwelveData WS loi, dang thu ket noi lai...`;
+  };
+
+  liveSocket.onclose = () => {
+    window.clearInterval(socketHeartbeatTimer);
+    socketHeartbeatTimer = null;
+    liveSocket = null;
+
+    if (twelveDataReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      const delay = Math.min(2000 * 2 ** twelveDataReconnectAttempts, 30000);
+      twelveDataReconnectAttempts += 1;
+      el.status.textContent = `${symbol} TwelveData WS mat ket noi, thu lai sau ${Math.round(delay / 1000)}s...`;
+      window.setTimeout(() => {
+        if (el.source.value === 'twelvedata') {
+          startTwelveDataDirectStream(symbol, interval, limit, token);
+        }
+      }, delay);
+    } else {
+      startTwelveDataProxyStream(symbol, interval, limit, token);
+    }
+  };
+}
+
+function startTwelveDataProxyStream(symbol, interval, limit, token) {
   closeLiveSocket();
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const params = new URLSearchParams({
@@ -4089,12 +4047,10 @@ function startTwelveDataStream(symbol, interval, limit, token) {
   if (token) params.set('apikey', token);
   liveSocket = new WebSocket(`${protocol}//${window.location.host}/api/ws/price?${params}`);
 
-    liveSocket.onopen = () => {
+  liveSocket.onopen = () => {
     twelveDataReconnectAttempts = 0;
     socketHeartbeatTimer = window.setInterval(() => {
-      if (liveSocket?.readyState === WebSocket.OPEN) {
-        liveSocket.send('ping');
-      }
+      if (liveSocket?.readyState === WebSocket.OPEN) liveSocket.send('ping');
     }, 15000);
     el.status.textContent = `${symbol} ${interval} PROXY dang ket noi`;
   };
@@ -4108,15 +4064,10 @@ function startTwelveDataStream(symbol, interval, limit, token) {
     }
     if (message.type === 'error') {
       el.status.textContent = `${symbol} proxy loi: ${message.error || 'stream error'}`;
-      if (isTwelveDataLimitError(providerError('twelvedata', message.error || 'stream error'))) {
-        fallbackToYahoo('TwelveData', symbol, interval, limit, message.error || 'het credit');
-      }
       return;
     }
-
     const price = Number(message.price ?? message.p ?? message.value);
     if (!Number.isFinite(price)) return;
-
     const timestampMs = Number(message.timestamp || Date.now());
     const candle = updateCurrentPrice(price, interval, limit, Math.floor(timestampMs / 1000));
     if (candle) renderLiveCandle(candle, price);
@@ -4124,7 +4075,7 @@ function startTwelveDataStream(symbol, interval, limit, token) {
     el.status.textContent = `${symbol} PROXY ${Math.round(twelveDataStreamPollMs / 1000)}S ${formatPrice(price)} ${new Date(timestampMs).toLocaleTimeString()}`;
   };
 
-   liveSocket.onerror = () => {
+  liveSocket.onerror = () => {
     el.status.textContent = `${symbol} proxy loi, dang thu ket noi lai...`;
   };
 
@@ -4132,19 +4083,6 @@ function startTwelveDataStream(symbol, interval, limit, token) {
     window.clearInterval(socketHeartbeatTimer);
     socketHeartbeatTimer = null;
     liveSocket = null;
-
-    if (twelveDataReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-      const delay = Math.min(2000 * 2 ** twelveDataReconnectAttempts, 30000);
-      twelveDataReconnectAttempts += 1;
-      el.status.textContent = `${symbol} proxy mat ket noi, thu lai sau ${Math.round(delay / 1000)}s...`;
-      window.setTimeout(() => {
-        if (el.source.value === 'twelvedata') {
-          startTwelveDataStream(symbol, interval, limit, token);
-        }
-      }, delay);
-    } else {
-      fallbackToYahoo('Proxy', symbol, interval, limit, 'mat ket noi qua nhieu lan');
-    }
   };
 }
 function startBinanceStream(symbol, interval, limit) {
@@ -4179,19 +4117,78 @@ function startBinanceStream(symbol, interval, limit) {
   };
 }
 
+function startTradingViewStream(symbol, interval, limit, token) {
+  closeLiveSocket();
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const params = new URLSearchParams({
+    source: 'tradingview',
+    symbol,
+    deviceId: getDeviceId(),
+    deviceName: getDeviceName(),
+  });
+  liveSocket = new WebSocket(`${protocol}//${window.location.host}/api/ws/price?${params}`);
+
+  liveSocket.onopen = () => {
+    twelveDataReconnectAttempts = 0;
+    socketHeartbeatTimer = window.setInterval(() => {
+      if (liveSocket?.readyState === WebSocket.OPEN) liveSocket.send('ping');
+    }, 15000);
+    el.status.textContent = `${symbol} ${interval} TRADINGVIEW OANDA dang ket noi`;
+  };
+
+  liveSocket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.type === 'ready') {
+      el.status.textContent = `${symbol} ${interval} TRADINGVIEW OANDA LIVE`;
+      return;
+    }
+    if (message.type === 'error') {
+      el.status.textContent = `${symbol} TradingView loi: ${message.error || 'stream error'}`;
+      return;
+    }
+    const price = Number(message.price ?? message.p ?? message.value);
+    if (!Number.isFinite(price)) return;
+    const timestampMs = Number(message.timestamp || Date.now());
+    const candle = updateCurrentPrice(price, interval, limit, Math.floor(timestampMs / 1000));
+    if (candle) renderLiveCandle(candle, price);
+    maybeRefreshComputed(800);
+    el.status.textContent = `${symbol} ${interval} TRADINGVIEW OANDA LIVE ${formatPrice(price)} ${new Date(timestampMs).toLocaleTimeString()}`;
+  };
+
+  liveSocket.onerror = () => {
+    el.status.textContent = `${symbol} TradingView loi, dang ket noi lai...`;
+  };
+
+  liveSocket.onclose = () => {
+    window.clearInterval(socketHeartbeatTimer);
+    socketHeartbeatTimer = null;
+    liveSocket = null;
+    if (twelveDataReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      const delay = Math.min(2000 * 2 ** twelveDataReconnectAttempts, 30000);
+      twelveDataReconnectAttempts += 1;
+      window.setTimeout(() => {
+        if (el.source.value === 'tradingview') startTradingViewStream(symbol, interval, limit, token);
+      }, delay);
+    } else {
+      el.status.textContent = `${symbol} TradingView mat ket noi, dang dung TwelveData du phong`;
+      startTwelveDataStream(symbol, interval, limit, token);
+    }
+  };
+}
+
 function startLiveStream(source, symbol, interval, limit, token) {
   if (source === 'binance') {
     startBinanceStream(symbol, interval, limit);
     return;
   }
 
-  if (source === 'finnhub' && token) {
-    startFinnhubStream(symbol, interval, limit, token);
+  if (source === 'twelvedata') {
+    startTwelveDataStream(symbol, interval, limit, token);
     return;
   }
 
-  if (source === 'twelvedata') {
-    startTwelveDataStream(symbol, interval, limit, token);
+  if (source === 'tradingview') {
+    startTradingViewStream(symbol, interval, limit, token);
     return;
   }
 
@@ -4211,6 +4208,8 @@ async function loadChart() {
     ? 'Yahoo fallback data, delayed'
     : source === 'twelvedata'
       ? 'TwelveData live data'
+      : source === 'tradingview'
+        ? 'TradingView OANDA thử nghiệm'
       : `${source} data`;
   el.status.textContent = `Loading ${symbol} ${interval} ${sourceNote}...`;
   el.reload.disabled = true;
@@ -4236,10 +4235,12 @@ async function loadChart() {
         fetchMarketDaily(source, symbol, token),
       ]);
     } catch (error) {
-      if (source === 'twelvedata' && isTwelveDataLimitError(error)) {
-        activeSource = 'yahoo';
-        activeToken = '';
-        el.status.textContent = `TwelveData het han muc, dang dung Yahoo du phong...`;
+      if (source === 'tradingview' || (source === 'twelvedata' && isTwelveDataLimitError(error))) {
+        activeSource = source === 'tradingview' ? 'twelvedata' : 'yahoo';
+        activeToken = source === 'tradingview' ? token : '';
+        el.status.textContent = source === 'tradingview'
+          ? 'TradingView history loi, dang dung TwelveData du phong...'
+          : 'TwelveData het han muc, dang dung Yahoo du phong...';
         [candles, dailyCandles] = await Promise.all([
           fetchMarketCandles(activeSource, symbol, interval, limit, activeToken),
           fetchMarketDaily(activeSource, symbol, activeToken),
@@ -4520,7 +4521,7 @@ el.source.addEventListener('change', () => {
 });
 el.token.addEventListener('change', () => {
   window.localStorage.setItem(sourceTokenKey(el.source.value), el.token.value.trim());
-  if (el.source.value === 'finnhub' || el.source.value === 'twelvedata') loadChart();
+  if (el.source.value === 'twelvedata' || el.source.value === 'tradingview') loadChart();
 });
 function applyOpOffsetChange() {
   window.localStorage.setItem('opOffset', el.opOffset.value.trim() || '0');
