@@ -42,6 +42,7 @@ const el = {
   chartFrame: document.querySelector('.chart-frame'),
   ksiTitle: document.querySelector('#ksiTitle'),
   kcxTitle: document.querySelector('#kcxTitle'),
+  candleCountdown: document.querySelector('#candleCountdown'),
   bias: document.querySelector('#biasText'),
   ktr: document.querySelector('#ktrText'),
   nearest: document.querySelector('#nearestText'),
@@ -3897,6 +3898,25 @@ function alignCandleTime(timestampSeconds, interval) {
   return Math.floor(timestampSeconds / step) * step;
 }
 
+function formatCandleCountdown(seconds) {
+  const remaining = Math.max(0, Math.ceil(Number(seconds) || 0));
+  const hours = Math.floor(remaining / 3600);
+  const minutes = Math.floor((remaining % 3600) / 60);
+  const secs = remaining % 60;
+  return hours > 0
+    ? `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+    : `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function updateCandleCountdown() {
+  if (!el.candleCountdown) return;
+  const interval = el.interval?.value || '5m';
+  const step = Math.floor((intervalMs[interval] || intervalMs['5m']) / 1000);
+  const now = Date.now() / 1000;
+  const candleStart = Math.floor(now / step) * step;
+  el.candleCountdown.textContent = `Nến ${formatCandleCountdown(candleStart + step - now)}`;
+}
+
 function updateCurrentPrice(price, interval, limit, tickTime = Math.floor(Date.now() / 1000)) {
   const lastIndex = currentCandles.length - 1;
   if (lastIndex < 0 || !Number.isFinite(price)) return;
@@ -4547,6 +4567,8 @@ el.opOffset.addEventListener('keydown', (event) => {
   }
 });
 el.interval.addEventListener('change', loadChart);
+updateCandleCountdown();
+window.setInterval(updateCandleCountdown, 250);
 for (const button of el.timeframeButtons) {
   button.addEventListener('click', () => {
     if (button.dataset.timeframe === el.interval.value) return;

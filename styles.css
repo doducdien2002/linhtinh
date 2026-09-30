@@ -880,6 +880,23 @@ select {
   box-shadow: 0 10px 24px rgba(2, 6, 23, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
+.candle-countdown {
+  position: absolute;
+  right: 10px;
+  bottom: 38px;
+  z-index: 7;
+  max-width: calc(100% - 20px);
+  padding: 4px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  background: rgba(2, 6, 23, 0.78);
+  color: #dbeafe;
+  font: 700 11px/1.2 Consolas, monospace;
+  letter-spacing: 0;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 .signal-notice {
   position: absolute;
   top: 12px;
@@ -1655,6 +1672,12 @@ select {
     right: 8px;
     bottom: 6px;
     max-width: calc(100vw - 68px);
+    font-size: 10px;
+  }
+
+  .candle-countdown {
+    right: 8px;
+    bottom: 34px;
     font-size: 10px;
   }
 
