@@ -102,6 +102,11 @@ window.fetch = (input, init = {}) => {
 };
 // --------------------------------------------------------------------------
 
+const MARKET_SOURCE_DEFAULT_VERSION = 'tradingview-oanda-default-v1';
+if (window.localStorage.getItem('marketSourceDefaultVersion') !== MARKET_SOURCE_DEFAULT_VERSION) {
+  window.localStorage.setItem('marketSource', 'tradingview');
+  window.localStorage.setItem('marketSourceDefaultVersion', MARKET_SOURCE_DEFAULT_VERSION);
+}
 const savedSource = window.localStorage.getItem('marketSource');
 if (savedSource === 'twelvedata' || savedSource === 'tradingview') {
   el.source.value = savedSource;
