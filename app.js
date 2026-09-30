@@ -3765,6 +3765,7 @@ function closeLiveSocket() {
   fullRenderTimer = null;
   socketHeartbeatTimer = null;
   liveRenderFrame = 0;
+  liveAnimState = null;
   queuedLiveCandle = null;
   queuedLivePrice = null;
 
@@ -3830,16 +3831,14 @@ function updateLivePriceLine(price) {
 let liveAnimState = null;
 
 function renderLiveCandle(candle, price) {
-  const livePhases = computeTrendPhases(currentCandles);
-  const side = livePhases.at(-1);
+  const side = candleSide(candle);
   const now = performance.now();
   const fromClose = liveAnimState ? liveAnimState.currentClose : candle.close;
   const fromPrice = liveAnimState ? liveAnimState.currentPrice : price;
 
-  // Chạy suốt gần hết khoảng chờ giữa 2 lần cập nhật (thay vì chỉ vài trăm ms),
-  // để nến "trôi" liên tục thay vì giật rồi đứng im.
-  const pollMs = twelveDataStreamPollMs || 2000;
-  const duration = clamp(pollMs * 0.92, 400, 15000);
+  // Provider ticks are irregular. A short tween absorbs small gaps without
+  // making the candle chase an old 15-60 second polling interval.
+  const duration = 120;
 
   liveAnimState = {
     base: candle,
@@ -3877,8 +3876,10 @@ function stepLiveCandleAnimation(now) {
   candleSeries?.update(colorCandle({ ...liveAnimState.base, close: displayClose }, liveAnimState.side));
   updateLivePriceLine(displayPrice);
 
-  // Luôn tiếp tục vòng lặp animation (kể cả khi t=1) để sẵn sàng nhận
-  // animation kế tiếp ngay khi renderLiveCandle gọi tới mà không bị khựng khung hình.
+  if (t >= 1) {
+    liveRenderFrame = 0;
+    return;
+  }
   liveRenderFrame = window.requestAnimationFrame(stepLiveCandleAnimation);
 }
 function scheduleFullRender(delayMs = 450) {
@@ -4013,7 +4014,7 @@ function startTwelveDataDirectStream(symbol, interval, limit, token) {
     const timestampMs = rawTimestamp > 0 && rawTimestamp < 1e12 ? rawTimestamp * 1000 : rawTimestamp;
     const candle = updateCurrentPrice(price, interval, limit, Math.floor(timestampMs / 1000));
     if (candle) renderLiveCandle(candle, price);
-    maybeRefreshComputed(800);
+    maybeRefreshComputed(1800);
     el.status.textContent = `${symbol} ${interval} TWELVEDATA WS LIVE ${formatPrice(price)} ${new Date(timestampMs).toLocaleTimeString()}`;
   };
 
@@ -4156,7 +4157,7 @@ function startTradingViewStream(symbol, interval, limit, token) {
     const timestampMs = Number(message.timestamp || Date.now());
     const candle = updateCurrentPrice(price, interval, limit, Math.floor(timestampMs / 1000));
     if (candle) renderLiveCandle(candle, price);
-    maybeRefreshComputed(800);
+    maybeRefreshComputed(1800);
     el.status.textContent = `${symbol} ${interval} TRADINGVIEW OANDA LIVE ${formatPrice(price)} ${new Date(timestampMs).toLocaleTimeString()}`;
   };
 
