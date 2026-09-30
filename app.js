@@ -2558,14 +2558,14 @@ function computeIndicators(candles, levels) {
   return { ksi, bullishness, markers, trendPhases, diamondLine };
 }
 
-function makePriceLine(series, price, color, title, lineStyle = LightweightCharts.LineStyle.Solid, lineWidth = 1) {
+function makePriceLine(series, price, color, title, lineStyle = LightweightCharts.LineStyle.Solid, lineWidth = 1, axisLabelVisible = true) {
   if (!Number.isFinite(Number(price))) return null;
   const line = series.createPriceLine({
     price: Number(price),
     color,
     lineWidth,
     lineStyle,
-    axisLabelVisible: true,
+    axisLabelVisible,
     title,
   });
   priceLines.push(line);
@@ -2608,7 +2608,15 @@ function renderLevels(levels, diamondLine = null) {
   const visibleLevelItems = levelItems.filter(isPriceLevelVisible);
 
   for (const item of visibleLevelItems) {
-    const line = makePriceLine(candleSeries, item.price, item.color, item.title, item.style, item.lineWidth || 1);
+    const line = makePriceLine(
+      candleSeries,
+      item.price,
+      item.color,
+      item.title,
+      item.style,
+      item.lineWidth || 1,
+      item.key !== 'ktrMinus2',
+    );
     if (item.key === 'price') livePriceLine = line;
   }
   renderLevelBadges(visibleLevelItems);
