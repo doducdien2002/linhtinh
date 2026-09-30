@@ -3831,31 +3831,16 @@ function updateLivePriceLine(price) {
 let liveAnimState = null;
 
 function renderLiveCandle(candle, price) {
-  const side = candleSide(candle);
-  const now = performance.now();
-  const fromClose = liveAnimState ? liveAnimState.currentClose : candle.close;
-  const fromPrice = liveAnimState ? liveAnimState.currentPrice : price;
-
-  // Provider ticks are irregular. A short tween absorbs small gaps without
-  // making the candle chase an old 15-60 second polling interval.
-  const duration = 120;
-
-  liveAnimState = {
-    base: candle,
-    side,
-    fromClose,
-    toClose: candle.close,
-    fromPrice,
-    toPrice: price,
-    currentClose: fromClose,
-    currentPrice: fromPrice,
-    start: now,
-    duration,
+  if (!candleSeries || !Number.isFinite(price)) return;
+  const liveCandle = {
+    ...candle,
+    close: price,
+    high: Math.max(Number(candle.high), price),
+    low: Math.min(Number(candle.low), price),
   };
-
-  if (!liveRenderFrame) {
-    liveRenderFrame = window.requestAnimationFrame(stepLiveCandleAnimation);
-  }
+  currentCandles[currentCandles.length - 1] = liveCandle;
+  candleSeries.update(colorCandle(liveCandle, candleSide(liveCandle)));
+  updateLivePriceLine(price);
 }
 
 function stepLiveCandleAnimation(now) {
