@@ -59,12 +59,13 @@ body.auth-locked .app-shell {
   background: linear-gradient(180deg, #f8fafc 0%, #eef3f8 100%);
   border: 1px solid rgba(217, 226, 239, 0.96);
   border-radius: 14px;
-  overflow: hidden;
+  overflow: visible;
   box-shadow: var(--shadow-lift);
 }
 
 .toolbar {
   position: relative;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -331,7 +332,7 @@ body.auth-locked .app-shell {
      page can't scroll). Use a fixed px guess close to the toolbar height instead. */
   top: 88px;
   right: 18px;
-  z-index: 9999;
+  z-index: 10000;
   display: grid;
   grid-template-columns: minmax(150px, 1fr) minmax(320px, 2fr) auto auto auto;
   align-items: start;
