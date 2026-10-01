@@ -1296,9 +1296,11 @@ select {
 
 .admin-dialog {
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 14px;
   width: min(1040px, 100%);
   max-height: min(86vh, 760px);
+  min-height: 0;
   overflow: hidden;
   padding: 18px;
   border: 1px solid rgba(226, 232, 240, 0.9);
@@ -1312,6 +1314,19 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.admin-panel {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+.admin-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .admin-head strong {
@@ -1349,9 +1364,28 @@ select {
 .admin-user-list {
   display: grid;
   gap: 10px;
+  flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding-right: 2px;
+  padding-bottom: 4px;
+  touch-action: pan-y;
+  scrollbar-gutter: stable;
+}
+
+.admin-device-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  padding-bottom: 4px;
+  touch-action: pan-y;
+  scrollbar-gutter: stable;
 }
 
 .admin-user-row {
@@ -1832,6 +1866,7 @@ select {
     height: 100dvh;
     max-height: 100vh;
     max-height: 100dvh;
+    min-height: 0;
     border-radius: 0;
     padding: 12px;
     padding-top: max(12px, env(safe-area-inset-top));
@@ -1839,6 +1874,10 @@ select {
   }
 
   .admin-user-list {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .admin-device-list {
     -webkit-overflow-scrolling: touch;
   }
 }
