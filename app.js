@@ -154,6 +154,7 @@ function ensureChartResizeObserver() {
 }
 let latestMarkers = [];
 const persistentSignalMarkers = new Map();
+let persistentMarkerContext = '';
 let latestLevelItems = [];
 let latestDiamondLine = null;
 let priceLines = [];
@@ -1222,12 +1223,10 @@ async function renderComputed(candles, dailyCandles, shouldFit = false) {
 function setMarkers(markers) {
   for (const marker of markers || []) {
     if (!Number.isFinite(Number(marker?.time))) continue;
-    const markerKey = [
-      marker.time,
-      marker.kind || '',
-      marker.label || '',
-      marker.strategy || '',
-    ].join('|');
+    // A signal belongs to its candle and direction. Labels/strategy text may
+    // be refined on a later server recomputation, but the visible marker must
+    // remain anchored to the original candle.
+    const markerKey = [marker.time, marker.kind || 'marker'].join('|');
     if (!persistentSignalMarkers.has(markerKey)) {
       persistentSignalMarkers.set(markerKey, marker);
     }
@@ -2791,8 +2790,6 @@ async function loadChart() {
   latestSignalTelegram = null;
   telegramSignalStates = [];
   signalDetectionReady = false;
-  persistentSignalMarkers.clear();
-
   try {
     let activeSource = source;
     let activeToken = token;
@@ -2818,6 +2815,12 @@ async function loadChart() {
       } else {
         throw error;
       }
+    }
+
+    const nextMarkerContext = `${symbol}|${interval}|${activeSource}`;
+    if (persistentMarkerContext !== nextMarkerContext) {
+      persistentSignalMarkers.clear();
+      persistentMarkerContext = nextMarkerContext;
     }
 
     currentCandles = candles;
