@@ -1246,6 +1246,24 @@ function renderDiamondMarkers(markers = latestMarkers) {
   if (!markerLayer || !chart || !candleSeries) return;
   markerLayer.replaceChildren();
 
+  const placedLabels = [];
+  const laneStep = 24;
+  const labelHeight = 26;
+
+  const collides = (candidate) => placedLabels.some((placed) => (
+    Math.abs(candidate.x - placed.x) < (candidate.width + placed.width) / 2 + 6
+    && Math.abs(candidate.top - placed.top) < labelHeight
+  ));
+
+  const chooseTop = (x, top, width, direction) => {
+    const offsets = [0, laneStep, laneStep * 2, laneStep * 3, -laneStep, -laneStep * 2];
+    for (const offset of offsets) {
+      const candidate = { x, top: top + offset * direction, width };
+      if (!collides(candidate)) return candidate.top;
+    }
+    return top + laneStep * 4 * direction;
+  };
+
   for (const marker of markers) {
     const x = chart.timeScale().timeToCoordinate(marker.time);
     const y = candleSeries.priceToCoordinate(marker.price);
@@ -1253,6 +1271,12 @@ function renderDiamondMarkers(markers = latestMarkers) {
 
     const isBuyArrow = marker.kind === 'buy-arrow';
     const isSellArrow = marker.kind === 'sell-arrow';
+    const label = marker.label || (isBuyArrow ? 'BUY' : isSellArrow ? 'SELL' : '');
+    const width = Math.max(32, String(label).length * 7 + 12);
+    const direction = isBuyArrow ? 1 : isSellArrow ? -1 : 1;
+    const desiredTop = y + (isBuyArrow ? 36 : isSellArrow ? -36 : marker.position === 'belowBar' ? 14 : -14);
+    const top = chooseTop(x, desiredTop, width, direction);
+    placedLabels.push({ x, top, width });
     const node = document.createElement('div');
     node.className = isBuyArrow
       ? 'buy-arrow-marker'
@@ -1260,9 +1284,8 @@ function renderDiamondMarkers(markers = latestMarkers) {
         ? 'sell-arrow-marker'
         : `diamond-marker ${marker.kind === 'add' ? 'diamond-add' : 'diamond-buy'}`;
     node.style.left = `${x}px`;
-    node.style.top = `${y + (isBuyArrow ? 36 : isSellArrow ? -36 : marker.position === 'belowBar' ? 14 : -14)}px`;
-    if (isBuyArrow) node.textContent = marker.label || 'BUY';
-    if (isSellArrow) node.textContent = marker.label || 'SELL';
+    node.style.top = `${top}px`;
+    if (isBuyArrow || isSellArrow) node.textContent = label;
     if (!isBuyArrow && !isSellArrow) {
       node.style.background = marker.color;
       if (marker.stackCount > 1) {

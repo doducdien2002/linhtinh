@@ -783,7 +783,6 @@ select {
   text-shadow: 0 1px 1px #000000, 0 0 5px rgba(106, 255, 0, 0.65);
   transform: translate(-50%, -50%);
   pointer-events: none;
-  animation: markerPop 220ms ease-out;
 }
 
 .buy-arrow-marker::before {
@@ -812,7 +811,6 @@ select {
   text-shadow: 0 1px 1px #000000, 0 0 5px rgba(255, 45, 21, 0.65);
   transform: translate(-50%, -50%);
   pointer-events: none;
-  animation: markerPop 220ms ease-out;
 }
 
 .sell-arrow-marker::before {
