@@ -3,8 +3,8 @@ const COLORS = {
   text: '#d1d4dc',
   grid: '#283142',
   border: '#2f3a4c',
-  candleUp: '#ffff00',
-  candleDown: '#ff2d15',
+  candleUp: '#009900',
+  candleDown: '#ff1515',
   lime: '#7fff00',
   yellow: '#ffff00',
   gold: '#daa520',
@@ -2003,10 +2003,12 @@ function syncSignalFilterMenu() {
 
 function loadHiddenPriceLevels() {
   try {
-    const saved = JSON.parse(window.localStorage.getItem(PRICE_LEVEL_STORAGE_KEY) || '[]');
+    const stored = window.localStorage.getItem(PRICE_LEVEL_STORAGE_KEY);
+    if (stored === null) return new Set(PRICE_LEVEL_KEYS);
+    const saved = JSON.parse(stored);
     return new Set(Array.isArray(saved) ? saved.filter((key) => PRICE_LEVEL_KEYS.includes(key)) : []);
   } catch (error) {
-    return new Set();
+    return new Set(PRICE_LEVEL_KEYS);
   }
 }
 
