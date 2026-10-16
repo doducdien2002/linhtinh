@@ -3,7 +3,7 @@ const COLORS = {
   text: '#d1d4dc',
   grid: '#283142',
   border: '#2f3a4c',
-  candleUp: '#009900',
+  candleUp: '#00b300',
   candleDown: '#ff1515',
   lime: '#7fff00',
   yellow: '#ffff00',
@@ -13,7 +13,7 @@ const COLORS = {
   cyan: '#00f0ff',
   kcb: '#c8f3ff',
   mlp: '#fff6a6',
-  boysBuy: '#009900',
+  boysBuy: '#00b300',
   boysSell: '#ff1515',
   blinkGreen: '#6aff00',
   markerAdd: '#ffd199',
@@ -54,6 +54,7 @@ const el = {
   signalRiskText: document.querySelector('#signalRiskText'),
   copySignal: document.querySelector('#copySignalButton'),
   sendTelegram: document.querySelector('#sendTelegramButton'),
+  pushNotificationButton: document.querySelector('#pushNotificationButton'),
   hideSignal: document.querySelector('#hideSignalButton'),
   signalToggle: document.querySelector('#signalToggleButton'),
   advancedControlsButton: document.querySelector('#advancedControlsButton'),
@@ -455,6 +456,73 @@ async function authGet(path) {
   return data;
 }
 
+function decodePushApplicationKey(base64UrlKey) {
+  const padding = '='.repeat((4 - (base64UrlKey.length % 4)) % 4);
+  const base64 = (base64UrlKey + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = window.atob(base64);
+  return Uint8Array.from(raw, (character) => character.charCodeAt(0));
+}
+
+async function enableLockScreenPush() {
+  const button = el.pushNotificationButton;
+  if (!button) return;
+  if (!authState.sessionId) {
+    el.status.textContent = 'Vui lòng đăng nhập trước khi bật thông báo.';
+    return;
+  }
+  if (!window.isSecureContext || !('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    el.status.textContent = 'Thông báo màn hình khóa cần website HTTPS và trình duyệt hỗ trợ Web Push.';
+    return;
+  }
+  const isIos = /iPhone|iPad|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  if (isIos && !isStandalone) {
+    el.status.textContent = 'iPhone: thêm CRAZII vào Màn hình chính, mở bằng biểu tượng rồi bật thông báo.';
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    el.status.textContent = 'Thông báo đã bị chặn. Hãy cho phép CRAZII trong cài đặt thông báo của điện thoại.';
+    return;
+  }
+
+  button.disabled = true;
+  const permissionPromise = Notification.requestPermission();
+  try {
+    const permission = await permissionPromise;
+    if (permission !== 'granted') {
+      el.status.textContent = 'Bạn chưa cho phép CRAZII gửi thông báo.';
+      return;
+    }
+    const [config, registration] = await Promise.all([
+      authGet('/api/push/config'),
+      navigator.serviceWorker.register('/service-worker.js'),
+    ]);
+    if (!config.configured || !config.publicKey) {
+      throw new Error('Máy chủ chưa cấu hình khóa Web Push (VAPID).');
+    }
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: decodePushApplicationKey(config.publicKey),
+      });
+    }
+    await authPost('/api/push/subscribe', {
+      sessionId: authState.sessionId,
+      subscription: subscription.toJSON(),
+    });
+    await authPost('/api/push/test', { sessionId: authState.sessionId });
+    button.textContent = '🔔';
+    button.title = 'Thông báo màn hình khóa đã bật';
+    el.status.textContent = 'Đã bật thông báo CRAZII. Hãy khóa màn hình để kiểm tra thông báo thử.';
+  } catch (error) {
+    console.warn(error);
+    el.status.textContent = 'Không bật được thông báo: ' + error.message;
+  } finally {
+    button.disabled = !authState.sessionId;
+  }
+}
 function syncAuthUi() {
   const loggedIn = Boolean(authState.user && authState.sessionId);
   document.body.classList.toggle('auth-locked', !loggedIn);
@@ -463,6 +531,7 @@ function syncAuthUi() {
     ? `${authState.user.displayName || authState.user.username}`
     : 'Chưa đăng nhập';
   el.adminButton?.classList.toggle('hidden', authState.user?.role !== 'admin');
+  if (el.pushNotificationButton) el.pushNotificationButton.disabled = !loggedIn;
 }
 
 function stopAuthHeartbeat() {
@@ -3061,6 +3130,7 @@ window.addEventListener('orientationchange', () => {
   setAdvancedControlsOpen(false);
 });
 initSignalNoticeDrag();
+el.pushNotificationButton?.addEventListener('click', enableLockScreenPush);
 el.hideSignal?.addEventListener('click', () => {
   signalNoticeCollapsed = true;
   syncSignalToggle(Boolean(latestSignalCopy));

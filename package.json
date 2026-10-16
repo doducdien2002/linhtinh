@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "firebase-admin": "^13.6.0",
-    "tradingview-api-adapter": "^2.0.0"
+    "tradingview-api-adapter": "^2.0.0",
+    "web-push": "^3.6.7"
   },
   "overrides": {
     "uuid": "^11.1.1"

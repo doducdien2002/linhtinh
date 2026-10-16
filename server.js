@@ -31,6 +31,8 @@ const authStoreDocName = process.env.FIRESTORE_AUTH_DOC || 'authStore';
 const devicesCollectionName = process.env.FIRESTORE_DEVICES_COLLECTION || 'craziiDevices';
 const telegramDeliveriesCollectionName = process.env.FIRESTORE_DELIVERIES_COLLECTION || 'telegramDeliveries';
 const telegramSignalsCollectionName = process.env.FIRESTORE_SIGNALS_COLLECTION || 'telegramSignals';
+const pushSubscriptionsCollectionName = process.env.FIRESTORE_PUSH_SUBSCRIPTIONS_COLLECTION || 'craziiPushSubscriptions';
+const pushDeliveriesCollectionName = process.env.FIRESTORE_PUSH_DELIVERIES_COLLECTION || 'craziiPushDeliveries';
 const authCacheTtlMs = Number(process.env.AUTH_CACHE_TTL_MS || 5000);
 const deviceWriteIntervalMs = Number(process.env.DEVICE_WRITE_INTERVAL_MS || 300000);
 const realtimePricePollMs = Math.max(Number(process.env.REALTIME_PRICE_POLL_MS || 60_000), 2_000);
@@ -69,6 +71,8 @@ const contentTypes = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
 };
 
@@ -947,6 +951,168 @@ function handleAuth(req, res, url) {
   sendJson(res, 404, { ok: false, error: 'Auth endpoint not found' });
 }
 
+function webPushConfig() {
+  return {
+    publicKey: String(process.env.VAPID_PUBLIC_KEY || '').trim(),
+    privateKey: String(process.env.VAPID_PRIVATE_KEY || '').trim(),
+    subject: String(process.env.VAPID_SUBJECT || '').trim(),
+  };
+}
+
+let webPushClient = null;
+let webPushClientConfig = '';
+
+function getWebPushClient() {
+  const config = webPushConfig();
+  if (!config.publicKey || !config.privateKey || !config.subject) return null;
+  const signature = config.publicKey + ':' + config.privateKey + ':' + config.subject;
+  if (webPushClient && webPushClientConfig === signature) return webPushClient;
+  const client = require('web-push');
+  client.setVapidDetails(config.subject, config.publicKey, config.privateKey);
+  webPushClient = client;
+  webPushClientConfig = signature;
+  return client;
+}
+
+async function sendWebPushToUser(ownerId, notification, deliveryId = '') {
+  const userId = String(ownerId || '').trim();
+  if (!userId) return 0;
+  const client = getWebPushClient();
+  if (!client) return 0;
+  const db = getFirestore();
+  if (!db) return 0;
+
+  const normalizedDeliveryId = String(deliveryId || '').trim();
+  const deliveryRef = normalizedDeliveryId
+    ? db.collection(pushDeliveriesCollectionName).doc(deliveryDocumentId(userId + ':' + normalizedDeliveryId))
+    : null;
+  if (deliveryRef && (await deliveryRef.get()).exists) return 0;
+
+  const snapshot = await db.collection(pushSubscriptionsCollectionName).where('ownerId', '==', userId).get();
+  if (snapshot.empty) return 0;
+  const payload = JSON.stringify({
+    title: String(notification?.title || 'CRAZII').slice(0, 100),
+    body: String(notification?.body || '').slice(0, 1200),
+    url: String(notification?.url || '/').slice(0, 300),
+    tag: normalizedDeliveryId ? 'crazii-' + deliveryDocumentId(normalizedDeliveryId) : 'crazii-notification',
+  });
+  let sentCount = 0;
+  await Promise.all(snapshot.docs.map(async (document) => {
+    const subscription = document.data()?.subscription;
+    if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) return;
+    try {
+      await client.sendNotification(subscription, payload, { TTL: 60, urgency: 'high' });
+      sentCount += 1;
+    } catch (error) {
+      if (error.statusCode === 404 || error.statusCode === 410) {
+        await document.ref.delete().catch(() => {});
+        return;
+      }
+      console.warn('Web push delivery failed for ' + userId + ': ' + error.message);
+    }
+  }));
+  if (deliveryRef && sentCount > 0) {
+    await deliveryRef.set({ ownerId: userId, deliveryId: normalizedDeliveryId, sentAt: nowIso(), count: sentCount });
+  }
+  return sentCount;
+}
+
+async function sendUserNotifications(ownerId, text, deliveryId = '') {
+  let telegram = null;
+  let telegramError = null;
+  try {
+    telegram = await deliverTelegramText(text, deliveryId);
+  } catch (error) {
+    telegramError = error;
+  }
+  let pushSent = 0;
+  let pushError = null;
+  try {
+    pushSent = await sendWebPushToUser(ownerId, {
+      title: 'CRAZII · Tín hiệu giao dịch',
+      body: String(text || '').trim(),
+      url: '/',
+    }, deliveryId);
+  } catch (error) {
+    pushError = error;
+    console.warn('Web push error for ' + ownerId + ': ' + error.message);
+  }
+  if (!telegram && pushSent === 0) {
+    throw telegramError || pushError || new Error('Chưa gửi được thông báo. Hãy cấu hình Telegram hoặc Web Push.');
+  }
+  return {
+    deduplicated: Boolean(telegram?.deduplicated),
+    telegramSent: Boolean(telegram),
+    pushSent,
+  };
+}
+
+async function handlePushApi(req, res, url) {
+  if (url.pathname === '/api/push/config' && req.method === 'GET') {
+    const config = webPushConfig();
+    sendJson(res, 200, {
+      ok: true,
+      configured: Boolean(config.publicKey && config.privateKey && config.subject),
+      publicKey: config.publicKey,
+    });
+    return;
+  }
+  if (!['/api/push/subscribe', '/api/push/unsubscribe', '/api/push/test'].includes(url.pathname)) {
+    sendJson(res, 404, { ok: false, error: 'Push endpoint not found' });
+    return;
+  }
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { ok: false, error: 'Method not allowed' });
+    return;
+  }
+  if (rejectCrossOrigin(req, res)) return;
+  try {
+    const payload = await readJsonBody(req);
+    const auth = await resolveSession(await loadAuthStore(), payload, req);
+    const db = requireFirestore();
+    if (url.pathname === '/api/push/subscribe') {
+      const subscription = payload.subscription;
+      const endpoint = String(subscription?.endpoint || '').trim();
+      const p256dh = String(subscription?.keys?.p256dh || '').trim();
+      const authKey = String(subscription?.keys?.auth || '').trim();
+      if (!endpoint.startsWith('https://') || !p256dh || !authKey) {
+        throw sessionError(400, 'Thông tin đăng ký thông báo không hợp lệ.');
+      }
+      const id = crypto.createHash('sha256').update(endpoint).digest('hex');
+      await db.collection(pushSubscriptionsCollectionName).doc(id).set({
+        ownerId: auth.user.id,
+        endpoint,
+        subscription: { endpoint, keys: { p256dh, auth: authKey } },
+        userAgent: String(req.headers['user-agent'] || '').slice(0, 300),
+        updatedAt: nowIso(),
+      }, { merge: true });
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (url.pathname === '/api/push/unsubscribe') {
+      const endpoint = String(payload.endpoint || '').trim();
+      if (!endpoint.startsWith('https://')) throw sessionError(400, 'Endpoint không hợp lệ.');
+      const id = crypto.createHash('sha256').update(endpoint).digest('hex');
+      const ref = db.collection(pushSubscriptionsCollectionName).doc(id);
+      const snapshot = await ref.get();
+      if (snapshot.exists && snapshot.data()?.ownerId === auth.user.id) await ref.delete();
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    const sent = await sendWebPushToUser(auth.user.id, {
+      title: 'CRAZII · Thông báo đã bật',
+      body: 'Điện thoại này đã sẵn sàng nhận tín hiệu giao dịch.',
+      url: '/',
+    }, 'test:' + Date.now());
+    if (sent < 1) {
+      sendJson(res, 503, { ok: false, error: 'Chưa gửi được thông báo thử. Kiểm tra cấu hình VAPID và Firestore.' });
+      return;
+    }
+    sendJson(res, 200, { ok: true, sent });
+  } catch (error) {
+    sendJson(res, error.status || 400, { ok: false, error: error.message || 'Push request failed', reason: error.reason || '' });
+  }
+}
 async function deliverTelegramText(text, deliveryId = '') {
   const telegramConfig = readTelegramConfig();
   const token = telegramConfig.botToken || process.env.TELEGRAM_BOT_TOKEN;
@@ -1011,14 +1177,13 @@ async function sendTelegramMessage(req, res) {
 
   try {
     const payload = await readJsonBody(req);
-    await resolveSession(await loadAuthStore(), payload, req);
-    const delivered = await deliverTelegramText(payload.text, payload.deliveryId);
+    const auth = await resolveSession(await loadAuthStore(), payload, req);
+    const delivered = await sendUserNotifications(auth.user.id, payload.text, payload.deliveryId);
     sendJson(res, 200, { ok: true, ...delivered });
   } catch (error) {
-    sendJson(res, error.status || 502, { ok: false, error: error.message || 'Telegram delivery failed' });
+    sendJson(res, error.status || 502, { ok: false, error: error.message || 'Notification delivery failed' });
   }
 }
-
 function signalDocumentId(signal) {
   return String(signal?.id || '').replace(/\//g, '_').slice(0, 240);
 }
@@ -1609,6 +1774,14 @@ function nextPendingSignalTarget(signal, tpHits) {
   return Number.isFinite(price) ? { key, name: nextName, price } : null;
 }
 
+async function notifySignalOwner(signal, result, price, deliveryId) {
+  const message = formatServerTradeUpdate(signal, result, price);
+  try {
+    await sendUserNotifications(signal.ownerId, message, deliveryId);
+  } catch (error) {
+    console.warn('Signal notification failed for ' + signal.ownerId + ': ' + error.message);
+  }
+}
 async function monitorTradeSignals() {
   if (signalMonitorRunning) return;
   const db = getFirestore();
@@ -1640,6 +1813,7 @@ async function monitorTradeSignals() {
       const hitSl = isBuy ? price <= Number(signal.sl) : price >= Number(signal.sl);
       if (hitSl) {
         const result = signal.breakEvenMoved && Math.abs(Number(signal.sl) - Number(signal.entry)) < 0.000001 ? 'BE' : 'SL';
+        await notifySignalOwner(signal, result, price, 'result:' + signal.id + ':' + result);
         Object.assign(updates, { closed: true, closedAt: Date.now(), closeResult: result, tpHits });
         await document.set(updates);
         continue;
@@ -1649,7 +1823,7 @@ async function monitorTradeSignals() {
       if (target) {
         const hitTarget = isBuy ? price >= target.price : price <= target.price;
         if (hitTarget) {
-          await deliverTelegramText(formatServerTradeUpdate(signal, target.name, price), `result:${signal.id}:${target.name}`);
+          await notifySignalOwner(signal, target.name, price, 'result:' + signal.id + ':' + target.name);
           tpHits.push(target.name);
         }
         if (hitTarget && target.name === 'TP1') {
@@ -1836,6 +2010,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname.startsWith('/api/push/')) {
+    handlePushApi(req, res, url);
+    return;
+  }
   if (url.pathname === '/api/telegram/send') {
     sendTelegramMessage(req, res);
     return;

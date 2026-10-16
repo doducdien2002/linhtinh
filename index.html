@@ -2,8 +2,14 @@
 <html lang="vi">
   <head>
     <meta charset="UTF-8" />
+    <meta name="theme-color" content="#111722" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="CRAZII" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>XAUUSD.ca KIM CHI VANG Indicator</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/app-icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="stylesheet" href="./styles.css?v=20260913-polish" />
     <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -68,6 +74,7 @@
           <button class="icon-button" type="button" data-action="zoom-out" aria-label="Zoom out">&#8722;</button>
           <button class="icon-button" type="button" data-action="zoom-in" aria-label="Zoom in">+</button>
           <button id="reloadButton" class="icon-button" type="button" aria-label="Reload">&#8635;</button>
+          <button id="pushNotificationButton" class="icon-button" type="button" aria-label="Bật thông báo màn hình khóa" title="Bật thông báo màn hình khóa" disabled>&#128276;</button>
           <button class="icon-button" type="button" data-action="fullscreen" aria-label="Fullscreen">&#9974;</button>
           <button id="signalToggleButton" class="signal-toggle-button signal-state-empty" type="button" title="Chua co keo">TIN HIEU</button>
           <input id="tokenInput" class="toolbar-token-input" placeholder="API key TwelveData (nếu dùng)" title="API key TwelveData" spellcheck="false" inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" />
