@@ -774,13 +774,13 @@ select {
   align-items: center;
   gap: 2px;
   min-width: 28px;
-  color: #6aff00;
+  color: #00b300;
   font-family: Arial, sans-serif;
   font-size: 10px;
   font-weight: 900;
   line-height: 1;
   white-space: nowrap;
-  text-shadow: 0 1px 1px #000000, 0 0 5px rgba(106, 255, 0, 0.65);
+  text-shadow: 0 1px 1px #000000, 0 0 5px rgba(0, 179, 0, 0.65);
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
@@ -791,8 +791,8 @@ select {
   height: 0;
   border-left: 8px solid transparent;
   border-right: 8px solid transparent;
-  border-bottom: 18px solid #6aff00;
-  filter: drop-shadow(0 1px 1px #000000) drop-shadow(0 0 8px rgba(106, 255, 0, 0.72));
+  border-bottom: 18px solid #00b300;
+  filter: drop-shadow(0 1px 1px #000000) drop-shadow(0 0 8px rgba(0, 179, 0, 0.72));
 }
 
 .sell-arrow-marker {

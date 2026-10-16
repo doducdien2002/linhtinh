@@ -15,7 +15,7 @@ const COLORS = {
   mlp: '#fff6a6',
   boysBuy: '#00b300',
   boysSell: '#ff1515',
-  blinkGreen: '#6aff00',
+  blinkGreen: '#00b300',
   markerAdd: '#ffd199',
 };
 
